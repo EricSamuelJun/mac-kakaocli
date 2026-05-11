@@ -89,6 +89,22 @@ public final class KakaoAutomator {
             throw AutomationError.inputFieldNotFound
         }
 
+        // 7.5. Defense-in-depth: confirm the opened window's title matches the
+        // row we selected. Catches impersonation / 동명이인 races where the
+        // chat list reorders between row lookup and window open. Skipped for
+        // self-chat — the badge-based row finder is already unambiguous.
+        if !selfChat {
+            let expected = AXHelpers.chatRowName(row) ?? chatName
+            let verification = AXHelpers.verifyChatHeader(chatWindow, expected: expected)
+            if !verification.matched {
+                _ = AXHelpers.closeWindow(chatWindow)
+                throw AutomationError.chatVerificationFailed(
+                    expected: expected,
+                    actual: verification.actual
+                )
+            }
+        }
+
         // 8. Find the message input field
         guard let inputField = findInputField(in: chatWindow) else {
             throw AutomationError.inputFieldNotFound
@@ -142,6 +158,7 @@ public enum AutomationError: Error, CustomStringConvertible {
     case chatNotFound(String)
     case inputFieldNotFound
     case sendFailed(String)
+    case chatVerificationFailed(expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -153,6 +170,8 @@ public enum AutomationError: Error, CustomStringConvertible {
             return "Could not find the message input field"
         case .sendFailed(let msg):
             return "Failed to send message: \(msg)"
+        case .chatVerificationFailed(let expected, let actual):
+            return "Chat window header mismatch: expected '\(expected)', got '\(actual)'. Aborted to avoid sending to the wrong chat."
         }
     }
 }

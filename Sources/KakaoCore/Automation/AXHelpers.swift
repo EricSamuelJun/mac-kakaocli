@@ -209,6 +209,46 @@ public enum AXHelpers {
         return nil
     }
 
+    /// Read the chat-name label of a chat-list row (the `_NS:40` / `_NS:18`
+    /// AXStaticText). Returns nil if no recognisable label is found — callers
+    /// fall back to the substring the row was looked up with.
+    public static func chatRowName(_ row: AXUIElement) -> String? {
+        for cell in children(row) {
+            guard role(cell) == "AXCell" else { continue }
+            for child in children(cell) {
+                let childId = identifier(child)
+                if role(child) == "AXStaticText" && (childId == "_NS:40" || childId == "_NS:18") {
+                    return value(child)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Compare a chat-window AX title against the expected chat name.
+    /// Both sides are NFC-normalised, trimmed and lower-cased before substring
+    /// matching — group chats sometimes append a member-count suffix.
+    /// Empty `expected` returns `true` (caller chose not to verify).
+    public static func chatTitleMatches(title: String, expected: String) -> Bool {
+        let exp = normalizeChatLabel(expected)
+        if exp.isEmpty { return true }
+        return normalizeChatLabel(title).contains(exp)
+    }
+
+    /// Read the chat window's AX title and compare it to `expected`.
+    /// Returns the comparison result alongside the raw title for diagnostics.
+    public static func verifyChatHeader(_ window: AXUIElement, expected: String) -> (matched: Bool, actual: String) {
+        let actual = title(window) ?? ""
+        return (chatTitleMatches(title: actual, expected: expected), actual)
+    }
+
+    /// Canonical-form lowercase for chat-name comparison.
+    private static func normalizeChatLabel(_ s: String) -> String {
+        s.precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
     /// Find the self-chat row (identified by "badge me" image in the cell).
     public static func findSelfChatRow(_ table: AXUIElement) -> AXUIElement? {
         for row in children(table) {

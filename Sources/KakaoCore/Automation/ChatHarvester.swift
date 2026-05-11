@@ -176,6 +176,24 @@ public enum ChatHarvester {
                 continue
             }
 
+            // Defense-in-depth: the row we clicked may have been re-ordered
+            // out from under us between findChatRow and doubleClickElement.
+            // Confirm the opened window's title matches the row label before
+            // doing anything inside the chat.
+            let headerCheck = AXHelpers.verifyChatHeader(chatWindow, expected: uiName)
+            if !headerCheck.matched {
+                progress("  ⚠ Header mismatch: expected '\(uiName)', got '\(headerCheck.actual)'. Closing.")
+                _ = AXHelpers.closeWindow(chatWindow)
+                Thread.sleep(forTimeInterval: 0.3)
+                results.append(HarvestResult(
+                    chatId: chatId, uiName: uiName,
+                    messagesBefore: msgCount, messagesAfter: msgCount,
+                    skipped: true,
+                    skipReason: "header mismatch: expected '\(uiName)', got '\(headerCheck.actual)'"
+                ))
+                continue
+            }
+
             // Load older messages: scroll to top, then click "View Previous Chats" repeatedly
             let windowTitle = AXHelpers.title(chatWindow) ?? uiName
             let messagesAfter = loadHistory(
@@ -239,16 +257,7 @@ public enum ChatHarvester {
 
     /// Extract the display name from a chat list row.
     private static func extractName(from row: AXUIElement) -> String {
-        for cell in AXHelpers.children(row) {
-            guard AXHelpers.role(cell) == "AXCell" else { continue }
-            for child in AXHelpers.children(cell) {
-                let childId = AXHelpers.identifier(child)
-                if AXHelpers.role(child) == "AXStaticText" && (childId == "_NS:40" || childId == "_NS:18") {
-                    return AXHelpers.value(child) ?? "(unknown)"
-                }
-            }
-        }
-        return "(unknown)"
+        AXHelpers.chatRowName(row) ?? "(unknown)"
     }
 
     /// Main history loading loop for a single chat.
