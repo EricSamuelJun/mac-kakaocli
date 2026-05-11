@@ -8,7 +8,7 @@ import Foundation
 public final class ServerLogger: @unchecked Sendable {
     // @unchecked: all writes go through a serial dispatch queue.
 
-    public enum Output {
+    public enum Output: Sendable {
         case file(URL)
         case stdout
     }
