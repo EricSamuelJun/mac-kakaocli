@@ -124,8 +124,9 @@ kakaocli search "keyword" --json
 
 ```bash
 kakaocli send "Chat Name" "Message text"
-kakaocli send x --me "Self-chat message"    # --me flag for self-chat
-kakaocli send "Mom" "Hello" --dry-run       # Preview without sending
+kakaocli send _ --me "Self-chat message"     # --me flag for self-chat
+kakaocli send _ --main "Notification"        # --main reads KAKAOCLI_MAIN_CHAT_NAME env
+kakaocli send "Mom" "Hello" --dry-run        # Preview without sending
 ```
 
 **Important constraints:**
@@ -134,6 +135,68 @@ kakaocli send "Mom" "Hello" --dry-run       # Preview without sending
 - Rate limit: wait at least 2 seconds between sends
 - The chat window opens, types, sends, then closes automatically
 - The `--me` flag sends to self-chat regardless of the chat name argument (use `_` as placeholder)
+- The `--main` flag is the same pattern but reads the chat name from `KAKAOCLI_MAIN_CHAT_NAME` — use it from cron/agent scripts so the operator's primary-account name is not baked in. `--me` and `--main` are mutually exclusive.
+
+## HTTP Server (Iris-Compatible)
+
+For agents and orchestrators that prefer HTTP over a CLI subprocess, `kakaocli serve` exposes a minimal endpoint that accepts the same JSON shape as the [Iris bot's](https://github.com/dolidolih/Iris) `POST /reply`. This means a Spring Boot / Hermes orchestrator can target `kakaocli serve` today and swap to `irisbot` (Android) later by changing only the URL — both backends accept identical payloads.
+
+### Starting the Server
+
+```bash
+# Foreground, stdout logs (development)
+kakaocli serve --log -
+
+# Bind to all interfaces (e.g. Tailscale exposure)
+kakaocli serve --host 0.0.0.0 --port 8080
+
+# Env-driven (LaunchAgent / Docker)
+KAKAOCLI_SERVE_HOST=0.0.0.0 KAKAOCLI_SERVE_PORT=8080 kakaocli serve
+```
+
+Defaults: `127.0.0.1:8080`. Log file: `~/.kakaocli/serve.log` (JSON-line). Pass `--log -` to stream to stdout instead.
+
+### Wire Format
+
+`POST /reply` — Content-Type: `application/json`
+
+Request:
+```json
+{"type": "text", "room": "313526436723168", "data": "Hello"}
+```
+- `type`: only `"text"` is supported in Phase 1.
+- `room`: numeric KakaoTalk chatId as a string. Look up with `kakaocli chats --json`. No name-based aliases on the HTTP path — use the CLI `--main` / `--me` for those.
+- `data`: the message body. KakaoTalk's ~10,000-char limit applies.
+- `threadId` (optional): accepted for Iris compatibility but currently ignored.
+
+Response (always HTTP 200, except 5xx for genuine server faults):
+```json
+{"success": true, "message": "sent to 전성욱 (chatId=313526436723168)"}
+```
+
+Errors before the AX step (unknown chatId, invalid `room`, unsupported `type`) return `{"success": false, "message": "..."}` with HTTP 200, matching Iris semantics.
+
+`GET /health` returns `{"status":"ok"}` for liveness checks.
+
+### Running Unattended (LaunchAgent)
+
+macOS isolates SSH sessions from the WindowServer / Accessibility APIs, so `kakaocli serve` started over SSH listens on the port but every `/reply` request fails with `"did not become ready within timeout"` when it tries to drive the UI. Launching the server inside the user's GUI session via `launchctl` fixes this. A plist template ships in the repo:
+
+```bash
+cp deploy/launchd/com.kakaocli.serve.plist.template \
+   ~/Library/LaunchAgents/com.kakaocli.serve.plist
+$EDITOR ~/Library/LaunchAgents/com.kakaocli.serve.plist     # fill __REPLACE_*__
+plutil ~/Library/LaunchAgents/com.kakaocli.serve.plist      # validate
+launchctl bootstrap gui/$(id -u) \
+   ~/Library/LaunchAgents/com.kakaocli.serve.plist
+launchctl list | grep kakaocli                              # PID + exit code
+```
+
+First call after install may surface Accessibility / Full Disk Access prompts — approve them via Chrome Remote Desktop or another GUI session. Persistent thereafter.
+
+### Concurrency / Ordering
+
+Requests are dispatched to a single serial work queue so KakaoTalk's UI is never driven by two requests at once. Burst senders should expect serialized processing (~2-3s per message including AX wait).
 
 ## Sync Mode (Real-Time Monitoring)
 
@@ -165,7 +228,9 @@ Returns: `{"status":"ready","max_log_id":12345}` — useful for getting the curr
 
 ## Agent Integration Pattern
 
-Typical agent loop:
+Pick the transport that fits your agent:
+
+### Option A: CLI subprocess (same host)
 
 ```python
 import subprocess, json
@@ -181,7 +246,23 @@ for msg in messages:
         subprocess.run(["kakaocli", "send", msg["chat_name"], response_text])
 ```
 
-Or use sync mode for real-time:
+### Option B: HTTP (cross-host, Iris-compatible)
+
+For an orchestrator on a different node (e.g. Spring Boot on Ubuntu, kakaocli serve on a Mac mini reachable over Tailscale):
+
+```python
+import requests
+
+requests.post(
+    "http://mac-mini.tailnet:8080/reply",
+    json={"type": "text", "room": "313526436723168", "data": "hello"},
+    timeout=60,
+)
+```
+
+The same orchestrator code will keep working when the backend is later swapped to `irisbot` (Android) — only the URL changes.
+
+### Option C: Sync mode for real-time
 
 ```bash
 kakaocli sync --follow | while read -r line; do
