@@ -18,8 +18,14 @@ struct HarvestCommand: ParsableCommand {
             """
     )
 
-    @Option(name: .long, help: "Process top N most recent chats (default: all)")
+    @Option(name: .long, help: "Process top N most recent chats (default: all). Ignored when --chat-id / --chat-ids is given.")
     var top: Int = 0
+
+    @Option(name: .long, help: "Process a single chat by its numeric chatId (stable across UI reorders)")
+    var chatId: Int?
+
+    @Option(name: .long, help: "Process several chats by chatId, comma-separated (e.g. --chat-ids 313526436723168,468542230323777)")
+    var chatIds: String?
 
     @Flag(name: .long, help: "Open chats and load history via scroll + View Previous Chats")
     var scroll = false
@@ -39,6 +45,27 @@ struct HarvestCommand: ParsableCommand {
     @Option(name: .long, help: "Database encryption key")
     var key: String?
 
+    func validate() throws {
+        if chatId != nil && chatIds != nil {
+            throw ValidationError("--chat-id and --chat-ids are mutually exclusive")
+        }
+    }
+
+    private func resolveTargetChatIds() throws -> [Int64]? {
+        if let id = chatId {
+            return [Int64(id)]
+        }
+        if let csv = chatIds, !csv.isEmpty {
+            let parts = csv.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let ids = parts.compactMap { Int64($0) }
+            guard ids.count == parts.count, !ids.isEmpty else {
+                throw ValidationError("--chat-ids must be a non-empty comma-separated list of integers")
+            }
+            return ids
+        }
+        return nil
+    }
+
     func run() throws {
         let (path, secureKey) = try resolveDatabasePath(dbPath: db, key: key)
         let reader = DatabaseReader(databasePath: path)
@@ -46,22 +73,29 @@ struct HarvestCommand: ParsableCommand {
         defer { reader.close() }
 
         let metadata = MetadataStore()
+        let targetChatIds = try resolveTargetChatIds()
 
         if dryRun {
-            let limit = top > 0 ? top : 1000
-            let chats = try reader.chats(limit: limit)
+            let chats: [Chat]
+            if let ids = targetChatIds {
+                chats = ids.compactMap { try? reader.chat(byChatId: $0) }
+            } else {
+                let limit = top > 0 ? top : 1000
+                chats = try reader.chats(limit: limit)
+            }
             fputs("DRY RUN: Would process \(chats.count) chats\n", stderr)
             for (i, chat) in chats.enumerated() {
                 let existing = metadata.name(for: chat.id)
                 let nameInfo = existing.map { " (metadata: \($0))" } ?? ""
                 let unread = chat.unreadCount > 0 ? " [SKIP: \(chat.unreadCount) unread]" : ""
-                fputs("  [\(i+1)] \(chat.displayName)\(nameInfo)\(unread)\n", stderr)
+                fputs("  [\(i+1)] \(chat.displayName) [chatId=\(chat.id)]\(nameInfo)\(unread)\n", stderr)
             }
             fputs("\nMetadata store: \(metadata.count) entries at ~/.kakaocli/metadata.json\n", stderr)
             return
         }
 
         let options = ChatHarvester.Options(
+            targetChatIds: targetChatIds,
             maxChats: top,
             maxPreviousClicks: maxClicks,
             namesOnly: !scroll,

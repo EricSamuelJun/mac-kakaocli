@@ -18,6 +18,9 @@ public enum ChatHarvester {
     }
 
     public struct Options {
+        /// When non-nil, harvest only these chatIds (stable across UI reorders).
+        /// When nil, fall back to top-N over `ORDER BY lastUpdatedAt DESC` (legacy).
+        public var targetChatIds: [Int64]?
         public var maxChats: Int
         public var maxScrollsPerChat: Int
         public var maxPreviousClicks: Int
@@ -26,6 +29,7 @@ public enum ChatHarvester {
         public var scrollDelay: TimeInterval
 
         public init(
+            targetChatIds: [Int64]? = nil,
             maxChats: Int = 0,
             maxScrollsPerChat: Int = 15,
             maxPreviousClicks: Int = 10,
@@ -33,6 +37,7 @@ public enum ChatHarvester {
             skipUnread: Bool = true,
             scrollDelay: TimeInterval = 1.5
         ) {
+            self.targetChatIds = targetChatIds
             self.maxChats = maxChats
             self.maxScrollsPerChat = maxScrollsPerChat
             self.maxPreviousClicks = maxPreviousClicks
@@ -53,16 +58,11 @@ public enum ChatHarvester {
         options: Options,
         progress: @escaping (String) -> Void
     ) throws -> [HarvestResult] {
-        // 1. Get DB chat list ordered by lastUpdatedAt DESC (matches UI order)
-        let dbChats = try db.rawQuery("""
-            SELECT r.chatId, r.type, r.activeMembersCount,
-                   r.countOfNewMessage, r.lastUpdatedAt,
-                   (SELECT COUNT(*) FROM NTChatMessage m WHERE m.chatId = r.chatId) as msgCount
-            FROM NTChatRoom r
-            ORDER BY r.lastUpdatedAt DESC
-        """)
-
-        progress("Found \(dbChats.count) chats in database")
+        // 1. Fetch the chat set we will operate on. With targetChatIds the
+        //    selection is exact and stable; without it we fall back to the
+        //    legacy "top N by lastUpdatedAt DESC" behaviour.
+        let dbChats = try fetchTargets(db: db, options: options)
+        progress("Selected \(dbChats.count) chats from database")
 
         // 2. Ensure KakaoTalk is running and logged in
         let state = AppLifecycle.detectState()
@@ -94,49 +94,56 @@ public enum ChatHarvester {
             Thread.sleep(forTimeInterval: 0.3)
         }
 
-        // 6. Get chat list table and rows
+        // 6. Get chat list table (rows are re-read inside each iteration so a
+        //    reorder mid-harvest doesn't desync our pointer).
         guard let table = AXHelpers.chatListTable(mainWindow) else {
             throw AutomationError.chatNotFound("chat list table")
         }
 
-        let allRows = AXHelpers.children(table).filter { AXHelpers.role($0) == "AXRow" }
-        progress("Found \(allRows.count) chats in UI")
-
-        let limit = options.maxChats > 0
-            ? min(options.maxChats, min(allRows.count, dbChats.count))
-            : min(allRows.count, dbChats.count)
-
-        // 7. Process each chat
+        // 7. Process each chat — chatId-driven matching, no positional index.
         var results: [HarvestResult] = []
 
-        for i in 0..<limit {
-            let row = allRows[i]
-            let dbChat = dbChats[i]
-
+        for (i, dbChat) in dbChats.enumerated() {
             let chatId = dbChat[0] as! Int64
             let chatType = Int(dbChat[1] as! Int64)
             let memberCount = Int(dbChat[2] as! Int64)
             let unreadCount = dbChat[3] as! Int64
             let msgCount = Int(dbChat[5] as! Int64)
 
-            // Get UI name from the row
-            let uiName = extractName(from: row)
+            // The canonical name comes from the DB (now includes group-name
+            // synthesis from displayMemberIds). Fall back to "(unknown)" only
+            // if the lookup itself failed.
+            let dbName = (try? db.chat(byChatId: chatId))?.displayName ?? "(unknown)"
 
-            // Skip unread chats (safety: opening could mark as read)
+            // Skip unread (safety: opening could mark as read)
             if options.skipUnread && unreadCount > 0 {
-                progress("[\(i+1)/\(limit)] Skipping \(uiName) (\(unreadCount) unread)")
+                progress("[\(i+1)/\(dbChats.count)] Skipping \(dbName) [chatId=\(chatId)] (\(unreadCount) unread)")
                 results.append(HarvestResult(
-                    chatId: chatId, uiName: uiName,
+                    chatId: chatId, uiName: dbName,
                     messagesBefore: msgCount, messagesAfter: msgCount,
                     skipped: true, skipReason: "\(unreadCount) unread"
                 ))
-                metadata.update(chatId: chatId, name: uiName,
+                metadata.update(chatId: chatId, name: dbName,
                                memberCount: memberCount, chatType: chatType,
                                messageCount: msgCount)
                 continue
             }
 
-            progress("[\(i+1)/\(limit)] \(uiName) (\(msgCount) msgs)...")
+            // Look the chat up in the UI by name. findChatRow walks the current
+            // children of the table each call, so a reorder since the previous
+            // iteration is tolerated.
+            guard let row = AXHelpers.findChatRow(table, chatName: dbName) else {
+                progress("[\(i+1)/\(dbChats.count)] ⚠ UI row not found for chatId=\(chatId) (\(dbName))")
+                results.append(HarvestResult(
+                    chatId: chatId, uiName: dbName,
+                    messagesBefore: msgCount, messagesAfter: msgCount,
+                    skipped: true, skipReason: "UI row not found"
+                ))
+                continue
+            }
+            let uiName = extractName(from: row)
+
+            progress("[\(i+1)/\(dbChats.count)] \(dbName) [chatId=\(chatId)] (\(msgCount) msgs)...")
 
             metadata.update(chatId: chatId, name: uiName,
                            memberCount: memberCount, chatType: chatType)
@@ -204,6 +211,28 @@ public enum ChatHarvester {
         }
 
         return results
+    }
+
+    /// Build the DB-side chat set the harvest will iterate over.
+    /// - `targetChatIds` non-nil: pick exactly those chatIds.
+    /// - otherwise: ORDER BY lastUpdatedAt DESC, optionally capped by `maxChats`.
+    private static func fetchTargets(db: DatabaseReader, options: Options) throws -> [[Any]] {
+        let baseSelect = """
+            SELECT r.chatId, r.type, r.activeMembersCount,
+                   r.countOfNewMessage, r.lastUpdatedAt,
+                   (SELECT COUNT(*) FROM NTChatMessage m WHERE m.chatId = r.chatId) as msgCount
+            FROM NTChatRoom r
+        """
+        if let ids = options.targetChatIds, !ids.isEmpty {
+            // chatIds are Int64 — safe to interpolate into the SQL.
+            let csv = ids.map(String.init).joined(separator: ",")
+            return try db.rawQuery("\(baseSelect) WHERE r.chatId IN (\(csv))")
+        }
+        var sql = "\(baseSelect) ORDER BY r.lastUpdatedAt DESC"
+        if options.maxChats > 0 {
+            sql += " LIMIT \(options.maxChats)"
+        }
+        return try db.rawQuery(sql)
     }
 
     // MARK: - Private Helpers
