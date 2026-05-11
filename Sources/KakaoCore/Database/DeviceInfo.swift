@@ -1,4 +1,3 @@
-import CommonCrypto
 import Foundation
 
 /// Extracts device UUID and KakaoTalk user ID from the local system.
@@ -99,7 +98,7 @@ public enum DeviceInfo {
             // "DESIGNATEDFRIENDSREVISION:<sha512hex>". The active account has non-zero values.
             // We brute-force the pre-image since userIds are typically small integers.
             if let hash = activeAccountHash(from: plist) {
-                if let id = recoverUserIdFromSHA512(hexHash: hash) {
+                if let id = UserIdRecovery.recover(targetHash: hash) {
                     return id
                 }
             }
@@ -131,7 +130,7 @@ public enum DeviceInfo {
                 if let id = item as? Int { return id > 0 ? id : nil }
                 if let str = item as? String, let id = Int(str) { return id > 0 ? id : nil }
                 return nil
-            }
+            }.filter { !UserIdRecovery.knownSystemIds.contains($0) }
         }
         return []
     }
@@ -197,39 +196,6 @@ public enum DeviceInfo {
             else if let v = val as? Double { intVal = Int(v) }
             else { intVal = 0 }
             if intVal != 0 { return hash }
-        }
-        return nil
-    }
-
-    /// Recover a userId by brute-forcing the SHA-512 pre-image.
-    /// KakaoTalk stores SHA-512(userId) as hex in plist keys. Since userIds are
-    /// typically small integers, this is fast (< 1 second for IDs under 1M).
-    /// Searches up to 1 billion with a 10-second timeout.
-    public static func recoverUserIdFromSHA512(hexHash: String) -> Int? {
-        guard hexHash.count == 128 else { return nil }
-        // Parse target hash to bytes
-        var targetBytes = [UInt8](repeating: 0, count: 64)
-        let hexChars = Array(hexHash)
-        for i in 0..<64 {
-            guard let byte = UInt8(String(hexChars[i*2...i*2+1]), radix: 16) else { return nil }
-            targetBytes[i] = byte
-        }
-
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let maxId = 1_000_000_000
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA512_DIGEST_LENGTH))
-
-        for i in 0..<maxId {
-            let s = String(i)
-            let data = Array(s.utf8)
-            CC_SHA512(data, CC_LONG(data.count), &hash)
-            if hash == targetBytes {
-                return i
-            }
-            // Timeout after 10 seconds
-            if i % 5_000_000 == 0 && i > 0 {
-                if CFAbsoluteTimeGetCurrent() - startTime > 10 { return nil }
-            }
         }
         return nil
     }
