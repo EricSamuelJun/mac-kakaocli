@@ -24,6 +24,7 @@ kakaocli lets AI agents (Claude Code, Cursor, custom bots) check and send your K
 - **AI Agent Integration** — JSON output for every command, MCP skill definition, webhook delivery, auto-login
 - **Read** — list chats, view messages, full-text search, raw SQL queries
 - **Send** — send messages to any chat via UI automation
+- **Serve** — Iris-compatible HTTP server (`POST /reply`) so an orchestrator can swap kakaocli ↔ Iris backends without changing client code
 - **Sync** — real-time NDJSON message stream with webhook support
 - **Harvest** — bulk-capture chat names and load older message history
 
@@ -38,6 +39,7 @@ kakaocli는 AI 에이전트(Claude Code, Cursor, 커스텀 봇)가 카카오톡 
 - **AI 에이전트 연동** — 모든 명령의 JSON 출력, MCP 스킬 정의, 웹훅 전달, 자동 로그인
 - **읽기** — 채팅 목록, 메시지 조회, 전체 텍스트 검색, SQL 쿼리
 - **전송** — UI 자동화를 통한 메시지 전송
+- **HTTP 서버** — Iris 호환 `POST /reply` 엔드포인트. 오케스트레이터가 kakaocli ↔ Iris 백엔드를 클라이언트 코드 변경 없이 교체 가능
 - **동기화** — 실시간 NDJSON 메시지 스트림 및 웹훅 지원
 - **수집** — 채팅방 이름 일괄 수집 및 이전 메시지 로드
 
@@ -136,7 +138,7 @@ kakaocli query "SELECT COUNT(*) FROM NTChatMessage"
 | `kakaocli chats` | List chats sorted by last activity |
 | `kakaocli messages --chat "name"` | Show messages from a chat (substring match) |
 | `kakaocli search "keyword"` | Full-text search across all messages |
-| `kakaocli schema` | Dump raw database schema |
+| `kakaocli schema` | Dump raw database schema. `--format markdown\|sql`, `--output PATH` for a versioned dump (e.g. `docs/SCHEMA.md`) |
 | `kakaocli query "SQL"` | Run read-only SQL against the decrypted database |
 
 All read commands support `--json` for structured output.
@@ -148,8 +150,13 @@ All read commands support `--json` for structured output.
 ```bash
 kakaocli send "chat name" "message"    # Send to a chat
 kakaocli send --me _ "message"         # Send to self-chat (나와의 채팅)
+kakaocli send --main _ "message"       # Send to primary account (reads KAKAOCLI_MAIN_CHAT_NAME env)
 kakaocli send --dry-run "name" "msg"   # Preview without sending
 ```
+
+`--main` reads the target chat name from the `KAKAOCLI_MAIN_CHAT_NAME` environment variable so cron/agent scripts can be portable across operators without baking a name in.
+
+`--main`은 채팅 이름을 `KAKAOCLI_MAIN_CHAT_NAME` 환경변수에서 읽어, cron/에이전트 스크립트에서 이름을 하드코딩하지 않게 합니다.
 
 ### Sync / 동기화
 
@@ -160,6 +167,67 @@ kakaocli sync --follow --webhook http://localhost:8080/kakao  # POST to webhook
 ```
 
 See [AGENTS.md](AGENTS.md) for AI agent integration instructions.
+
+### Serve / HTTP 서버
+
+Expose an Iris-compatible HTTP endpoint so an orchestrator (Spring Boot, Hermes, etc.) can talk to kakaocli over the network. Wire format matches the [Iris bot's](https://github.com/dolidolih/Iris) `POST /reply` so the same orchestrator can later swap to `irisbot` (Android) by only changing the target URL.
+
+Iris 호환 HTTP 엔드포인트를 노출합니다. 오케스트레이터(Spring Boot, Hermes 등)가 네트워크로 kakaocli에 접근할 수 있고, 와이어 포맷이 [Iris bot의](https://github.com/dolidolih/Iris) `POST /reply`와 동일해서 향후 `irisbot`(Android)으로 교체 시 URL만 바꾸면 됩니다.
+
+```bash
+# Start the server. Defaults: 127.0.0.1:8080, logs at ~/.kakaocli/serve.log
+kakaocli serve
+
+# Tailscale / LAN exposure (Spring Boot on a separate node)
+kakaocli serve --host 0.0.0.0 --port 8080
+
+# Foreground with stdout logs (development)
+kakaocli serve --log -
+
+# Environment variable overrides (LaunchAgent / docker)
+KAKAOCLI_SERVE_HOST=0.0.0.0 KAKAOCLI_SERVE_PORT=8080 kakaocli serve
+```
+
+Endpoints:
+- `POST /reply` — body `{"type":"text","room":"<chatId>","data":"<message>","threadId":null}` (the `threadId` field is accepted for Iris compatibility but currently ignored)
+- `GET /health` — `{"status":"ok"}`
+
+`room` is the numeric KakaoTalk chatId as a string. Look it up with `kakaocli chats --json` or `kakaocli query "SELECT chatId FROM NTChatRoom WHERE ..."`.
+
+`room`은 카카오톡 chatId(숫자)를 문자열로 받습니다. `kakaocli chats --json` 또는 `kakaocli query`로 조회하세요.
+
+#### Running as a LaunchAgent (recommended for production)
+
+macOS isolates SSH sessions from the GUI WindowServer / Accessibility APIs, so `kakaocli serve` started over SSH listens on the port but every `/reply` request fails with `did not become ready within timeout` when it tries to drive the UI. Launching the server inside the user's GUI session via `launchctl` solves this. A template is provided.
+
+macOS는 SSH 세션을 GUI WindowServer/접근성 API와 분리하기 때문에, SSH에서 띄운 `kakaocli serve`는 포트는 열리지만 `/reply` 요청 시 UI 자동화가 실패합니다. `launchctl`로 GUI 세션에 띄우면 해결됩니다. 템플릿이 함께 제공됩니다.
+
+```bash
+# 1. Copy the template and edit __REPLACE_*__ placeholders
+cp deploy/launchd/com.kakaocli.serve.plist.template \
+   ~/Library/LaunchAgents/com.kakaocli.serve.plist
+$EDITOR ~/Library/LaunchAgents/com.kakaocli.serve.plist
+
+# 2. Validate plist syntax
+plutil ~/Library/LaunchAgents/com.kakaocli.serve.plist
+
+# 3. Load
+launchctl bootstrap gui/$(id -u) \
+   ~/Library/LaunchAgents/com.kakaocli.serve.plist
+
+# 4. Verify
+launchctl list | grep kakaocli      # PID + exit code
+curl -s http://127.0.0.1:8080/health
+tail -f ~/.kakaocli/serve.log
+
+# Unload
+launchctl bootout gui/$(id -u) \
+   ~/Library/LaunchAgents/com.kakaocli.serve.plist
+```
+
+The first `/reply` after a fresh install may trigger Accessibility / Full Disk Access prompts — approve them via Chrome Remote Desktop or another GUI session. They are persistent after the first approval.
+
+신규 설치 후 첫 `/reply` 호출 시 접근성/전체 디스크 접근 프롬프트가 뜰 수 있습니다 — Chrome Remote Desktop 등 GUI 세션에서 승인하세요. 한 번 승인 후 영구 유지됩니다.
 
 ### Harvest / 수집
 
