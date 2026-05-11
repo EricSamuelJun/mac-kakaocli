@@ -5,7 +5,8 @@ import Foundation
 /// matching the shape downstream consumers (Spring Boot, fluentbit) expect.
 /// Writes are serialised on an internal queue so concurrent connections
 /// cannot interleave output.
-public final class ServerLogger {
+public final class ServerLogger: @unchecked Sendable {
+    // @unchecked: all writes go through a serial dispatch queue.
 
     public enum Output {
         case file(URL)

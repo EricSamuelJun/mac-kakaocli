@@ -1,4 +1,5 @@
 import ArgumentParser
+import Darwin
 import Dispatch
 import Foundation
 import KakaoCore
@@ -69,7 +70,8 @@ struct ServeCommand: ParsableCommand {
             reader.close()
             // Give the logger queue a moment to flush.
             Thread.sleep(forTimeInterval: 0.2)
-            exit(0)
+            // Disambiguate from ParsableCommand.exit(withError:), which shadows the global symbol here.
+            Darwin.exit(0)
         }
 
         for sig in [SIGINT, SIGTERM] as [Int32] {
@@ -84,5 +86,7 @@ struct ServeCommand: ParsableCommand {
     }
 
     /// Hold strong refs to signal sources so they survive past `run()`'s frame.
-    private static var activeSources: [DispatchSourceSignal] = []
+    /// `nonisolated(unsafe)` is fine here: the array is only mutated once, on the main
+    /// thread inside `installShutdownHandlers`, before any concurrent activity starts.
+    nonisolated(unsafe) private static var activeSources: [DispatchSourceSignal] = []
 }

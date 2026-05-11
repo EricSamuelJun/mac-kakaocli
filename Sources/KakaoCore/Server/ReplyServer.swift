@@ -9,7 +9,10 @@ import Foundation
 /// background queue, accept loop, then dispatch each connection onto a
 /// serial work queue so the underlying KakaoTalk AX automation is never
 /// driven by two requests at once.
-public final class ReplyServer {
+public final class ReplyServer: @unchecked Sendable {
+    // @unchecked: mutable state (`listenSocket`, `shuttingDown`) is touched only from
+    // serial queues we own (acceptQueue / workQueue), so concurrent access is impossible
+    // in practice. Swift's checker can't see that, hence the manual conformance.
 
     private let bindHost: String
     private let bindPort: UInt16
