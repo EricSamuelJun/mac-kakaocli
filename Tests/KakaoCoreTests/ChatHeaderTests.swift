@@ -1,31 +1,34 @@
-import Testing
+import XCTest
 @testable import KakaoCore
 
-@Test func headerExactMatch() {
-    #expect(AXHelpers.chatTitleMatches(title: "전성욱", expected: "전성욱"))
-}
+final class ChatHeaderTests: XCTestCase {
 
-@Test func headerCaseAndWhitespaceInsensitive() {
-    #expect(AXHelpers.chatTitleMatches(title: "  KakaoTalk Test  ", expected: "kakaotalk test"))
-}
+    func testHeaderExactMatch() {
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: "전성욱", expected: "전성욱"))
+    }
 
-@Test func headerAllowsGroupCountSuffix() {
-    // KakaoTalk often appends a member count like "테스트 5" to group titles.
-    #expect(AXHelpers.chatTitleMatches(title: "테스트 5", expected: "테스트"))
-}
+    func testHeaderCaseAndWhitespaceInsensitive() {
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: "  KakaoTalk Test  ", expected: "kakaotalk test"))
+    }
 
-@Test func headerRejectsDifferentChat() {
-    #expect(!AXHelpers.chatTitleMatches(title: "최세일", expected: "전성욱"))
-}
+    func testHeaderAllowsGroupCountSuffix() {
+        // KakaoTalk often appends a member count like "테스트 5" to group titles.
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: "테스트 5", expected: "테스트"))
+    }
 
-@Test func headerEmptyExpectedIsTrustedAsPass() {
-    // No expected value → caller chose not to verify; pass-through.
-    #expect(AXHelpers.chatTitleMatches(title: "anything", expected: ""))
-    #expect(AXHelpers.chatTitleMatches(title: "anything", expected: "   "))
-}
+    func testHeaderRejectsDifferentChat() {
+        XCTAssertFalse(AXHelpers.chatTitleMatches(title: "최세일", expected: "전성욱"))
+    }
 
-@Test func headerHandlesNFCDecomposedKorean() {
-    // Decomposed jamo (NFD) of "전성욱" vs precomposed.
-    let nfdTitle = "전성욱".decomposedStringWithCanonicalMapping
-    #expect(AXHelpers.chatTitleMatches(title: nfdTitle, expected: "전성욱"))
+    func testHeaderEmptyExpectedIsTrustedAsPass() {
+        // No expected value → caller chose not to verify; pass-through.
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: "anything", expected: ""))
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: "anything", expected: "   "))
+    }
+
+    func testHeaderHandlesNFCDecomposedKorean() {
+        // Decomposed jamo (NFD) of "전성욱" vs precomposed.
+        let nfdTitle = "전성욱".decomposedStringWithCanonicalMapping
+        XCTAssertTrue(AXHelpers.chatTitleMatches(title: nfdTitle, expected: "전성욱"))
+    }
 }
