@@ -51,12 +51,22 @@ public enum DeviceInfo {
 
     /// Extract user ID from the KakaoTalk preferences plist.
     ///
-    /// Tries multiple strategies in order:
+    /// Order of resolution:
+    /// 0. `KAKAOCLI_USER_ID` environment variable (manual override)
     /// 1. FSChatWindowTransparency common suffix (legacy)
     /// 2. Direct key lookup (userId, user_id, etc.)
     /// 3. Recover userId by reversing SHA-512 hash from plist revision keys
     /// 4. FSChatWindowFrame_ common suffix
     public static func userId() throws -> Int {
+        // Strategy 0: Environment variable override.
+        // Workaround for macOS Tahoe / latest KakaoTalk where strategies 1-4 all fail:
+        // FSChatWindow* plist keys are no longer written, and the SHA-512 brute-force
+        // (single-threaded, 10s timeout, capped at 10^9) cannot reach larger userIds.
+        if let envStr = ProcessInfo.processInfo.environment["KAKAOCLI_USER_ID"],
+           let envId = Int(envStr), envId > 0 {
+            return envId
+        }
+
         let plistPaths = [containerPreferencesPath, preferencesPath]
         for plistPath in plistPaths {
             guard FileManager.default.fileExists(atPath: plistPath) else { continue }
