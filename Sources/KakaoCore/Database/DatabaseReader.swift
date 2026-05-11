@@ -128,6 +128,18 @@ public final class DatabaseReader: @unchecked Sendable {
         return rows.compactMap { try? toChat($0) }
     }
 
+    /// Look up `directChatMemberUserId` for a 1:1 chat. Returns nil for
+    /// groups, self-chat, open channels, or any chat without the column set.
+    /// Used by `SendPolicyVerifier` to pin the other side of a 1:1
+    /// conversation against `PolicyEntry.expectedUserId`.
+    public func directMemberUserId(forChatId chatId: Int64) throws -> Int64? {
+        let results = try query(
+            "SELECT directChatMemberUserId FROM NTChatRoom WHERE chatId = ? LIMIT 1",
+            bind: [.int64(chatId)]
+        ) { row in row.optionalInt64(0) }
+        return results.first ?? nil
+    }
+
     /// Look up a single chat room by its chatId.
     /// Returns nil if no row matches. displayName is resolved the same way as
     /// `chats(limit:)`: NTChatRoom.chatName → NTChatMeta name (groupNickname /

@@ -13,6 +13,7 @@ public enum SendError: Error, CustomStringConvertible {
     case chatNotFound(chatId: Int64)
     case unsupportedType(String)
     case automationFailed(Error)
+    case policyDenied(String)
 
     public var description: String {
         switch self {
@@ -20,6 +21,7 @@ public enum SendError: Error, CustomStringConvertible {
         case .chatNotFound(let id): return "Chat not found in database: \(id)"
         case .unsupportedType(let t): return "Unsupported message type: \(t)"
         case .automationFailed(let e): return "UI automation failed: \(e)"
+        case .policyDenied(let reason): return "Send denied by policy: \(reason)"
         }
     }
 }

@@ -195,10 +195,7 @@ struct InitCommand: ParsableCommand {
     }
 
     private func lookupDirectUserId(reader: DatabaseReader, chatId: Int64) throws -> Int64? {
-        let rows = try reader.rawQuery(
-            "SELECT directChatMemberUserId FROM NTChatRoom WHERE chatId = \(chatId) LIMIT 1"
-        )
-        return rows.first?.first as? Int64
+        try reader.directMemberUserId(forChatId: chatId)
     }
 
     private func openReader(userId: Int) throws -> DatabaseReader {
