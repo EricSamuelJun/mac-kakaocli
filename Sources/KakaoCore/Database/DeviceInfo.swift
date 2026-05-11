@@ -50,20 +50,29 @@ public enum DeviceInfo {
 
     /// Extract user ID from the KakaoTalk preferences plist.
     ///
-    /// Order of resolution:
-    /// 0. `KAKAOCLI_USER_ID` environment variable (manual override)
-    /// 1. FSChatWindowTransparency common suffix (legacy)
-    /// 2. Direct key lookup (userId, user_id, etc.)
-    /// 3. Recover userId by reversing SHA-512 hash from plist revision keys
-    /// 4. FSChatWindowFrame_ common suffix
+    /// Resolution order (highest priority first):
+    ///   - `KAKAOCLI_USER_ID` env var (one-off override; convenient for cron and CI)
+    ///   - `~/.kakaocli/config.json` `userId` field (set by `kakaocli init`)
+    ///   - plist heuristics:
+    ///       1. FSChatWindowTransparency common suffix (legacy)
+    ///       2. Direct key lookup (userId, user_id, etc.)
+    ///       3. SHA-512 brute-force of revision-key suffix
+    ///       4. NSWindow Frame FSChatWindowFrame_ common suffix
     public static func userId() throws -> Int {
-        // Strategy 0: Environment variable override.
-        // Workaround for macOS Tahoe / latest KakaoTalk where strategies 1-4 all fail:
-        // FSChatWindow* plist keys are no longer written, and the SHA-512 brute-force
-        // (single-threaded, 10s timeout, capped at 10^9) cannot reach larger userIds.
+        // Env var wins. Workaround for macOS Tahoe / latest KakaoTalk where the
+        // plist heuristics all fail; also useful for transient overrides (testing
+        // against a different account, running under a different operator, etc.).
         if let envStr = ProcessInfo.processInfo.environment["KAKAOCLI_USER_ID"],
            let envId = Int(envStr), envId > 0 {
             return envId
+        }
+
+        // Persistent operator config. Populated by `kakaocli init`; preferred over
+        // plist heuristics because it's deterministic and survives plist schema
+        // drift. A broken config falls through to the plist path rather than
+        // hard-failing — the operator can re-run init to fix it.
+        if let cfg = (try? Config.load()) ?? nil, let id = cfg.userId, id > 0 {
+            return id
         }
 
         let plistPaths = [containerPreferencesPath, preferencesPath]
