@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for `kakaocli serve`.
+
+  Why a LaunchAgent and not a launch from SSH:
+    macOS isolates SSH sessions from the GUI WindowServer / Accessibility
+    APIs, so a `kakaocli serve` process started over SSH cannot drive the
+    KakaoTalk UI. A LaunchAgent is launched inside the user's GUI session
+    on login, which gives it the WindowServer / AX access it needs.
+
+  Replace every `__REPLACE_*__` placeholder below with your own values,
+  then install via:
+
+      cp deploy/launchd/com.kakaocli.serve.plist.template \
+         ~/Library/LaunchAgents/com.kakaocli.serve.plist
+      # edit ~/Library/LaunchAgents/com.kakaocli.serve.plist
+      plutil ~/Library/LaunchAgents/com.kakaocli.serve.plist
+      launchctl bootstrap gui/$(id -u) \
+         ~/Library/LaunchAgents/com.kakaocli.serve.plist
+
+  Unload with:
+      launchctl bootout gui/$(id -u) \
+         ~/Library/LaunchAgents/com.kakaocli.serve.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kakaocli.serve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Point at the built binary. Symlinks under /opt/homebrew/bin
+             usually work; if Accessibility permissions get confused by
+             symlinks, switch to the absolute build path:
+             /Users/__REPLACE_USERNAME__/dev/kakaocli/.build/release/kakaocli -->
+        <string>/opt/homebrew/bin/kakaocli</string>
+        <string>serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- KakaoTalk userId for DB decryption (see handoff §2.3 / §2.4). -->
+        <key>KAKAOCLI_USER_ID</key>
+        <string>__REPLACE_WITH_YOUR_USER_ID__</string>
+
+        <!-- Optional: chat name used by `kakaocli send --main`. -->
+        <key>KAKAOCLI_MAIN_CHAT_NAME</key>
+        <string>__REPLACE_WITH_YOUR_MAIN_CHAT_NAME__</string>
+
+        <!-- 0.0.0.0 exposes the server on the Tailscale interface as well.
+             Use 127.0.0.1 for localhost-only. -->
+        <key>KAKAOCLI_SERVE_HOST</key>
+        <string>0.0.0.0</string>
+
+        <key>KAKAOCLI_SERVE_PORT</key>
+        <string>8080</string>
+
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if the process crashes. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/__REPLACE_USERNAME__/.kakaocli/serve.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/__REPLACE_USERNAME__/.kakaocli/serve.stderr.log</string>
+</dict>
+</plist>
