@@ -8,11 +8,11 @@ struct MessagesCommand: ParsableCommand {
         abstract: "Show recent messages"
     )
 
-    @Option(name: .long, help: "Filter by chat name (substring match)")
-    var chat: String?
-
-    @Option(name: .long, help: "Filter by chat ID")
+    @Option(name: .long, help: "Filter by chatId (preferred)")
     var chatId: Int64?
+
+    @Option(name: .long, help: "Filter by chat name (substring match) — legacy")
+    var chat: String?
 
     @Option(name: .long, help: "Show messages since (e.g. 1h, 24h, 7d)")
     var since: String?

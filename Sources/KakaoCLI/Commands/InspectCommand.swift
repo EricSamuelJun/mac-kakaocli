@@ -12,8 +12,23 @@ struct InspectCommand: ParsableCommand {
     @Option(name: .long, help: "Max tree depth to inspect")
     var depth: Int = 5
 
-    @Option(name: .long, help: "Open a chat by name and inspect the chat window")
+    @Option(name: .long, help: "Open a chat by chatId (preferred) and inspect the resulting window")
+    var openChatId: Int64?
+
+    @Option(name: .long, help: "Open a chat by name (substring match) — legacy")
     var openChat: String?
+
+    @Option(name: .long, help: "Path to database file (only used with --open-chat-id)")
+    var db: String?
+
+    @Option(name: .long, help: "Database encryption key (only used with --open-chat-id)")
+    var key: String?
+
+    func validate() throws {
+        if openChatId != nil && openChat != nil {
+            throw ValidationError("--open-chat-id and --open-chat are mutually exclusive.")
+        }
+    }
 
     func run() throws {
         let bundleId = "com.kakao.KakaoTalkMac"
@@ -27,7 +42,22 @@ struct InspectCommand: ParsableCommand {
             throw ExitCode.failure
         }
 
-        if let chatName = openChat {
+        // Resolve openChatId / openChat to a chat name for AX row matching.
+        let chatNameToOpen: String?
+        if let id = openChatId {
+            let reader = try openDatabase(dbPath: db, key: key)
+            defer { reader.close() }
+            guard let chat = try reader.chat(byChatId: id) else {
+                print("chatId \(id) not found in the database.")
+                throw ExitCode.failure
+            }
+            print("Resolved chatId \(id) → '\(chat.displayName)'")
+            chatNameToOpen = chat.displayName
+        } else {
+            chatNameToOpen = openChat
+        }
+
+        if let chatName = chatNameToOpen {
             // Click on a chat to open it, then inspect the resulting windows
             guard let mainWindow = windows.first(where: { AXHelpers.identifier($0) == "Main Window" }) else {
                 print("Could not find main window")
