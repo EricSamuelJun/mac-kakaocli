@@ -88,60 +88,149 @@ public final class DatabaseReader: @unchecked Sendable {
         let sql = """
             SELECT r.chatId, r.type, r.chatName, r.activeMembersCount,
                    r.lastLogId, r.lastUpdatedAt, r.countOfNewMessage,
-                   u.displayName, u.friendNickName, u.nickName
+                   u.displayName, u.friendNickName, u.nickName,
+                   r.displayMemberIds
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId = u.userId AND u.linkId = 0
             ORDER BY r.lastUpdatedAt DESC
             LIMIT ?
             """
-        return try query(sql, bind: [.int(limit)]) { row in
-            // For direct chats, use the friend's name; for groups, use chatName
-            let chatName = row.string(2)
-            let displayName = row.string(7) ?? row.string(8) ?? row.string(9)
-            let name = chatName ?? displayName ?? "(unknown)"
-
-            return Chat(
-                id: row.int64(0),
-                type: Chat.ChatType.from(rawInt: row.int(1)),
-                displayName: name,
-                memberCount: row.int(3),
-                lastMessageId: row.optionalInt64(4),
-                lastMessageAt: row.optionalKakaoDate(5),
-                unreadCount: row.int(6)
+        let rows = try query(sql, bind: [.int(limit)]) { row -> ChatRow in
+            ChatRow(
+                chatId: row.int64(0),
+                rawType: row.int(1),
+                chatName: row.string(2),
+                activeMembersCount: row.int(3),
+                lastLogId: row.optionalInt64(4),
+                lastUpdatedAt: row.optionalKakaoDate(5),
+                unreadCount: row.int(6),
+                friendUserName: row.string(7) ?? row.string(8) ?? row.string(9),
+                displayMemberIds: row.data(10)
             )
         }
+        return rows.compactMap { try? toChat($0) }
     }
 
     /// Look up a single chat room by its chatId.
     /// Returns nil if no row matches. Resolves displayName the same way as
-    /// `chats(limit:)` — NTChatRoom.chatName first, then the direct-member
-    /// user's displayName / friendNickName / nickName.
+    /// `chats(limit:)` — NTChatRoom.chatName first, the direct-member user's
+    /// names next, and for groups the displayMemberIds roster joined to NTUser.
     public func chat(byChatId chatId: Int64) throws -> Chat? {
         let sql = """
             SELECT r.chatId, r.type, r.chatName, r.activeMembersCount,
                    r.lastLogId, r.lastUpdatedAt, r.countOfNewMessage,
-                   u.displayName, u.friendNickName, u.nickName
+                   u.displayName, u.friendNickName, u.nickName,
+                   r.displayMemberIds
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId = u.userId AND u.linkId = 0
             WHERE r.chatId = ?
             LIMIT 1
             """
-        let results = try query(sql, bind: [.int64(chatId)]) { row -> Chat in
-            let chatName = row.string(2)
-            let userName = row.string(7) ?? row.string(8) ?? row.string(9)
-            let name = chatName ?? userName ?? "(unknown)"
-            return Chat(
-                id: row.int64(0),
-                type: Chat.ChatType.from(rawInt: row.int(1)),
-                displayName: name,
-                memberCount: row.int(3),
-                lastMessageId: row.optionalInt64(4),
-                lastMessageAt: row.optionalKakaoDate(5),
-                unreadCount: row.int(6)
+        let rows = try query(sql, bind: [.int64(chatId)]) { row -> ChatRow in
+            ChatRow(
+                chatId: row.int64(0),
+                rawType: row.int(1),
+                chatName: row.string(2),
+                activeMembersCount: row.int(3),
+                lastLogId: row.optionalInt64(4),
+                lastUpdatedAt: row.optionalKakaoDate(5),
+                unreadCount: row.int(6),
+                friendUserName: row.string(7) ?? row.string(8) ?? row.string(9),
+                displayMemberIds: row.data(10)
             )
         }
-        return results.first
+        return try rows.first.map { try toChat($0) }
     }
+
+    // MARK: - Chat row helpers
+
+    private struct ChatRow {
+        let chatId: Int64
+        let rawType: Int
+        let chatName: String?
+        let activeMembersCount: Int
+        let lastLogId: Int64?
+        let lastUpdatedAt: Date?
+        let unreadCount: Int
+        let friendUserName: String?
+        let displayMemberIds: Data?
+    }
+
+    private func toChat(_ row: ChatRow) throws -> Chat {
+        let chatType = Chat.ChatType.from(rawInt: row.rawType)
+        let name = try resolveDisplayName(row: row, chatType: chatType)
+        return Chat(
+            id: row.chatId,
+            type: chatType,
+            displayName: name,
+            memberCount: row.activeMembersCount,
+            lastMessageId: row.lastLogId,
+            lastMessageAt: row.lastUpdatedAt,
+            unreadCount: row.unreadCount
+        )
+    }
+
+    private func resolveDisplayName(row: ChatRow, chatType: Chat.ChatType) throws -> String {
+        // 1. Custom-set chat name wins for any chat type.
+        if let chatName = row.chatName, !chatName.isEmpty {
+            return chatName
+        }
+        // 2. Direct-member name (works for 1:1 chats).
+        if let userName = row.friendUserName, !userName.isEmpty {
+            return userName
+        }
+        // 3. Group chats: synthesise from member roster.
+        if chatType == .group, let blob = row.displayMemberIds, !blob.isEmpty {
+            if let synthesised = try? synthesiseGroupName(from: blob), !synthesised.isEmpty {
+                return synthesised
+            }
+        }
+        return "(unknown)"
+    }
+
+    /// Read userIds out of a displayMemberIds blob, JOIN to NTUser, and
+    /// join the resolved names with ", ". The local account's own userId is
+    /// dropped from the listing so the resulting label is what a human reader
+    /// would expect ("Alice, Bob" rather than "Self, Alice, Bob").
+    private func synthesiseGroupName(from blob: Data) throws -> String {
+        let memberIds = DisplayMemberIds.parse(blob)
+        guard !memberIds.isEmpty else { return "" }
+
+        let selfId = selfUserId
+        let placeholders = Array(repeating: "?", count: memberIds.count).joined(separator: ",")
+        let sql = """
+            SELECT userId, COALESCE(NULLIF(displayName, ''),
+                                    NULLIF(friendNickName, ''),
+                                    NULLIF(nickName, '')) AS resolvedName
+            FROM NTUser
+            WHERE userId IN (\(placeholders)) AND linkId = 0
+            """
+        let bind = memberIds.map { SQLValue.int64($0) }
+        let rows = try query(sql, bind: bind) { (row: Row) -> (Int64, String?) in
+            (row.int64(0), row.string(1))
+        }
+
+        var nameByUserId: [Int64: String] = [:]
+        for (uid, n) in rows {
+            if let n = n, !n.isEmpty {
+                nameByUserId[uid] = n
+            }
+        }
+
+        // Preserve the bplist order; drop the local account.
+        let ordered: [String] = memberIds.compactMap { uid in
+            if uid == selfId { return nil }
+            return nameByUserId[uid]
+        }
+        return ordered.joined(separator: ", ")
+    }
+
+    /// Best-effort lookup of the local KakaoTalk account's userId.
+    /// Cached lazily; resolution failures degrade the group-name synthesiser
+    /// to "include self" rather than crash.
+    private lazy var selfUserId: Int64? = {
+        return (try? DeviceInfo.userId()).map(Int64.init)
+    }()
 
     /// Get messages for a chat, optionally filtered by time.
     public func messages(chatId: Int64? = nil, since: Date? = nil, limit: Int = 50) throws -> [Message] {
@@ -370,6 +459,13 @@ public final class DatabaseReader: @unchecked Sendable {
         func string(_ col: Int32) -> String? {
             guard let ptr = sqlite3_column_text(stmt, col) else { return nil }
             return String(cString: ptr)
+        }
+
+        func data(_ col: Int32) -> Data? {
+            guard sqlite3_column_type(stmt, col) == SQLITE_BLOB,
+                  let bytes = sqlite3_column_blob(stmt, col) else { return nil }
+            let len = Int(sqlite3_column_bytes(stmt, col))
+            return Data(bytes: bytes, count: len)
         }
 
         func bool(_ col: Int32) -> Bool {
