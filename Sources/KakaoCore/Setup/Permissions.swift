@@ -11,8 +11,14 @@ public enum Permissions {
     /// behaviour is the only way to programmatically request the permission
     /// on macOS.
     public static func checkAccessibility(prompt: Bool = false) -> Bool {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let opts: NSDictionary = [key: prompt]
+        // kAXTrustedCheckOptionPrompt is imported as `Unmanaged<CFString>!`
+        // because its C header lacks nullability annotations, and reading the
+        // global to call `.takeUnretainedValue()` trips Swift 6 strict
+        // concurrency ("reference to var ... is not concurrency-safe").
+        // The CFString's value has been "AXTrustedCheckOptionPrompt" since
+        // 10.9 — the literal sidesteps the import quirk without changing
+        // behaviour.
+        let opts: NSDictionary = ["AXTrustedCheckOptionPrompt": prompt]
         return AXIsProcessTrustedWithOptions(opts as CFDictionary)
     }
 
