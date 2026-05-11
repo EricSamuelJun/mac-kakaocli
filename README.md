@@ -22,8 +22,9 @@
 kakaocli lets AI agents (Claude Code, Cursor, custom bots) check and send your KakaoTalk messages — something Kakao's official APIs simply can't do.
 
 - **AI Agent Integration** — JSON output for every command, MCP skill definition, webhook delivery, auto-login
+- **Init** — guided first-time setup: permissions, multi-threaded userId recovery, config and policy scaffolding
 - **Read** — list chats, view messages, full-text search, raw SQL queries
-- **Send** — send messages to any chat via UI automation
+- **Send** — chatId-first send with optional policy allowlist enforcement (impersonation defence)
 - **Serve** — Iris-compatible HTTP server (`POST /reply`) so an orchestrator can swap kakaocli ↔ Iris backends without changing client code
 - **Sync** — real-time NDJSON message stream with webhook support
 - **Harvest** — bulk-capture chat names and load older message history
@@ -37,8 +38,9 @@ Kakao's official APIs cannot read chat history, export conversations, or send fr
 kakaocli는 AI 에이전트(Claude Code, Cursor, 커스텀 봇)가 카카오톡 메시지를 확인하고 보낼 수 있게 해줍니다 — 카카오 공식 API로는 불가능한 기능입니다.
 
 - **AI 에이전트 연동** — 모든 명령의 JSON 출력, MCP 스킬 정의, 웹훅 전달, 자동 로그인
+- **초기화** — 권한 안내, 멀티스레드 userId 복원, config/policy 스캐폴딩을 한 번에
 - **읽기** — 채팅 목록, 메시지 조회, 전체 텍스트 검색, SQL 쿼리
-- **전송** — UI 자동화를 통한 메시지 전송
+- **전송** — chatId 기반 송신 + 정책 allowlist 검증 (사칭 방어)
 - **HTTP 서버** — Iris 호환 `POST /reply` 엔드포인트. 오케스트레이터가 kakaocli ↔ Iris 백엔드를 클라이언트 코드 변경 없이 교체 가능
 - **동기화** — 실시간 NDJSON 메시지 스트림 및 웹훅 지원
 - **수집** — 채팅방 이름 일괄 수집 및 이전 메시지 로드
@@ -85,47 +87,52 @@ Your terminal app needs two permissions in **System Settings > Privacy & Securit
 > [!NOTE]
 > Full Disk Access is required for all commands. Accessibility is only needed for `send`, `harvest`, and `inspect`.
 
-### 3. Verify it works / 동작 확인
+### 3. Initialize / 초기 설정
 
 ```bash
-# Check KakaoTalk installation and permissions
-kakaocli status
-
-# Verify database decryption
-kakaocli auth
-
-# List your most recent chats
-kakaocli chats --limit 10
+# Bootstrap: trigger Accessibility / Full Disk Access prompts,
+# recover userId (multithreaded brute-force, ~3-30s),
+# scaffold ~/.kakaocli/config.json and ~/.kakaocli/policy.json
+kakaocli init
 ```
 
-If `auth` succeeds, you're all set. All read commands work immediately — no KakaoTalk login or window required.
+The interactive flow lists your most recent direct chats and asks you to pick a primary 1:1 — that chatId becomes the allowlisted target for `send --main` and the policy verifier's first entry. Re-run with `--force` to overwrite; pass `--non-interactive` or `--primary-chat-id <id>` for unattended setup.
 
-`auth`가 성공하면 준비 완료입니다. 모든 읽기 명령은 카카오톡 창 없이도 바로 작동합니다.
+초기 설정이 권한 다이얼로그를 띄우고, userId 복원, 본계정 1:1 채팅 선택, `config.json`/`policy.json` 작성을 한 번에 처리합니다. 선택한 chatId가 `send --main`의 타겟이자 정책 verifier의 1차 항목이 됩니다.
 
-### 4. Try it out / 사용해보기
+### 4. Verify and try it out / 검증 및 사용해보기
 
 ```bash
-# Search across all your messages
+# Verify the resolved config decrypts the DB
+kakaocli auth
+
+# List recent chats — note the `id` column; that's the chatId
+kakaocli chats --limit 10
+
+# Read messages by chatId (preferred)
+kakaocli messages --chat-id 313526436723168 --since 7d
+
+# Send by chatId — verifier-protected
+kakaocli send 313526436723168 "안녕!"
+
+# Or by the configured primary chat
+kakaocli send --main "test"
+
+# Self-chat (verifier exempt — badge AX)
+kakaocli send --me "test message"
+
+# Full-text search
 kakaocli search "점심"
-
-# Read recent messages from a chat (substring match on name)
-kakaocli messages --chat "지수" --since 7d
-
-# Send a message (opens KakaoTalk UI automatically)
-kakaocli send "지수" "안녕!"
-
-# Send to self-chat (나와의 채팅) — safe for testing
-kakaocli send --me _ "test message"
 
 # Stream new messages as JSON
 kakaocli sync --follow
 
-# Run a custom SQL query against the database
+# Raw SQL
 kakaocli query "SELECT COUNT(*) FROM NTChatMessage"
 ```
 
 > [!TIP]
-> Use `--me` to send to your self-chat (나와의 채팅) when testing. This is the safest way to verify send functionality.
+> `kakaocli send` is chatId-first; pass `--name "name"` for legacy substring matching. Sends to chatIds outside `~/.kakaocli/policy.json` are denied when `denyByDefault` or `strictMode` is on — re-run `kakaocli init` to add entries, or pass `--unsafe-no-verify` for one-off bypass on the chatId path.
 
 ## Commands
 
@@ -133,13 +140,15 @@ kakaocli query "SELECT COUNT(*) FROM NTChatMessage"
 
 | Command | Description |
 |---------|-------------|
+| `kakaocli init` | First-time setup: permissions, userId recovery, scaffold `~/.kakaocli/{config,policy}.json` |
 | `kakaocli status` | Check KakaoTalk installation and permissions |
-| `kakaocli auth` | Verify database decryption |
+| `kakaocli auth` | Verify the operator config decrypts the database (`(config)`/`(env)`/`(override)`/`(plist)` source label) |
 | `kakaocli chats` | List chats sorted by last activity |
-| `kakaocli messages --chat "name"` | Show messages from a chat (substring match) |
+| `kakaocli messages --chat-id <id>` | Show messages from a chat by chatId (`--chat "name"` for legacy substring match) |
 | `kakaocli search "keyword"` | Full-text search across all messages |
 | `kakaocli schema` | Dump raw database schema. `--format markdown\|sql`, `--output PATH` for a versioned dump (e.g. `docs/SCHEMA.md`) |
 | `kakaocli query "SQL"` | Run read-only SQL against the decrypted database |
+| `kakaocli inspect --open-chat-id <id>` | Open a chat by chatId and dump its AX tree (`--open-chat "name"` for legacy) |
 
 All read commands support `--json` for structured output.
 
@@ -147,16 +156,22 @@ All read commands support `--json` for structured output.
 
 ### Send / 전송
 
+chatId-first. The chatId path runs through the send-policy verifier (see [Configuration](#configuration--설정)); `--name` is the explicit legacy substring path and is not verifier-protected.
+
+chatId 우선 방식. chatId 경로는 정책 verifier를 통과하며, `--name`은 명시적 legacy 경로로 verifier 적용 안 됨.
+
 ```bash
-kakaocli send "chat name" "message"    # Send to a chat
-kakaocli send --me _ "message"         # Send to self-chat (나와의 채팅)
-kakaocli send --main _ "message"       # Send to primary account (reads KAKAOCLI_MAIN_CHAT_NAME env)
-kakaocli send --dry-run "name" "msg"   # Preview without sending
+kakaocli send <chatId> "message"                      # primary form — verifier on
+kakaocli send --main "message"                         # policy.primaryChatId — verifier on
+kakaocli send --me "message"                           # self-chat — badge AX, verifier exempt
+kakaocli send --name "chat name" "message"             # legacy substring match — no verifier
+kakaocli send --dry-run <chatId> "message"             # preview without sending
+kakaocli send <chatId> "message" --unsafe-no-verify    # explicit bypass on chatId path
 ```
 
-`--main` reads the target chat name from the `KAKAOCLI_MAIN_CHAT_NAME` environment variable so cron/agent scripts can be portable across operators without baking a name in.
+`--main` resolves to `policy.primaryChatId` set during `kakaocli init`. For backward compatibility it falls back to the `KAKAOCLI_MAIN_CHAT_NAME` env var with a deprecation warning on stderr; new operators should rely on `policy.json`.
 
-`--main`은 채팅 이름을 `KAKAOCLI_MAIN_CHAT_NAME` 환경변수에서 읽어, cron/에이전트 스크립트에서 이름을 하드코딩하지 않게 합니다.
+`--main`은 `kakaocli init`에서 설정한 `policy.primaryChatId`를 사용합니다. 미설정 시 기존 `KAKAOCLI_MAIN_CHAT_NAME` env var로 fallback (stderr deprecation 경고). 신규 사용자는 `policy.json` 기준으로 운영하세요.
 
 ### Sync / 동기화
 
@@ -194,7 +209,9 @@ Endpoints:
 
 `room` is the numeric KakaoTalk chatId as a string. Look it up with `kakaocli chats --json` or `kakaocli query "SELECT chatId FROM NTChatRoom WHERE ..."`.
 
-`room`은 카카오톡 chatId(숫자)를 문자열로 받습니다. `kakaocli chats --json` 또는 `kakaocli query`로 조회하세요.
+Every `/reply` is gated by the send-policy verifier — chatIds outside `~/.kakaocli/policy.json` are denied when `denyByDefault` or `strictMode` is on. The HTTP path has **no per-request bypass**; misconfiguration is strictly a `policy.json` edit. See [Configuration](#configuration--설정).
+
+`room`은 카카오톡 chatId(숫자)를 문자열로 받습니다. `kakaocli chats --json` 또는 `kakaocli query`로 조회하세요. 모든 `/reply` 호출은 정책 verifier를 통과해야 하며, HTTP 경로에는 per-request 우회 옵션이 없습니다.
 
 #### Running as a LaunchAgent (recommended for production)
 
@@ -257,6 +274,61 @@ kakaocli login --clear                                # Remove credentials
 
 When you run `send`, `sync`, or any command that needs KakaoTalk, the tool automatically launches the app, detects the login screen, fills credentials, and waits for login to complete.
 
+## Configuration / 설정
+
+`kakaocli init` scaffolds two JSON files in `~/.kakaocli/`. Both are owner-readable only (0600).
+
+### `config.json` — operator identity
+
+```json
+{
+  "version": 1,
+  "userId": 361746971,
+  "deviceUUID": null,
+  "databasePath": null
+}
+```
+
+- `userId` — your KakaoTalk userId, recovered via parallel SHA-512 brute-force during init. Required to derive the SQLCipher database key.
+- `deviceUUID`, `databasePath` — optional overrides for unusual setups. `null` means auto-detect.
+
+Resolution order for `userId`: `KAKAOCLI_USER_ID` env var → `config.json` → plist auto-detection. The env var still wins as a one-off override (useful for cron / CI / alternate accounts).
+
+### `policy.json` — send-policy allowlist
+
+```json
+{
+  "version": 1,
+  "allowlist": [
+    {
+      "chatId": 313526436723168,
+      "expectedName": "전성욱",
+      "expectedUserId": 68062272,
+      "purpose": "primary_account_1on1"
+    }
+  ],
+  "strictMode": false,
+  "denyByDefault": true,
+  "primaryChatId": 313526436723168
+}
+```
+
+Sends through chatId paths (`send <chatId>`, `send --main`, HTTP `POST /reply`) are verified against this allowlist:
+
+| Decision matrix | strictMode | denyByDefault | Unknown chatId | Allowlist mismatch |
+|-----------------|------------|---------------|----------------|---------------------|
+| Strict | `true` | (any) | **deny** | **deny** |
+| Deny-by-default | `false` | `true` | **deny** | **deny** |
+| Advisory | `false` | `false` | warn + allow | **deny** |
+
+- `expectedName` is compared via NFC + trim + lowercase **substring** match — group titles with member-count suffixes ("테스트 5" matching "테스트") still verify cleanly.
+- `expectedUserId` pins the other side of a 1:1 chat against `NTChatRoom.directChatMemberUserId`. `null` skips this check (groups, self-chat, open channels).
+- CLI `send --name` and `send --me` skip verification by design. HTTP `/reply` has no bypass — misconfiguration is a `policy.json` edit, not a per-request override.
+
+To add entries: edit `policy.json` directly, or re-run `kakaocli init --force`. A malformed policy.json is logged to stderr and treated as "no policy" so a bad edit doesn't lock the operator out.
+
+설정 파일은 두 개로 도메인 분리되어 있습니다 — `config.json`은 식별자/경로, `policy.json`은 송신 권한. chatId 경로 송신은 allowlist를 통과해야 하고, 이름·userId 불일치 시 거부됩니다 (사칭 / 채팅 리스트 재정렬 방어). 잘못 편집된 `policy.json`은 "no policy"로 처리되니 락아웃되지 않습니다.
+
 ## AI Integration / AI 연동
 
 kakaocli is designed to work with AI coding assistants and agents. Every read command outputs structured JSON, and the tool handles KakaoTalk's full lifecycle automatically (launch, login, window management).
@@ -268,12 +340,16 @@ Add kakaocli as a skill in your project's `CLAUDE.md`:
 ```markdown
 ## KakaoTalk Integration
 
-Use `kakaocli` to read and send KakaoTalk messages:
+Use `kakaocli` to read and send KakaoTalk messages. The `id` field in
+`kakaocli chats --json` is the chatId — that's the canonical identifier
+across all commands.
+
 - `kakaocli chats --json` — list all chats
-- `kakaocli messages --chat "name" --json` — read messages
-- `kakaocli search "keyword" --json` — search messages
-- `kakaocli send "name" "message"` — send a message
-- `kakaocli send --me _ "message"` — send to self-chat (safe for testing)
+- `kakaocli messages --chat-id <id> --json` — read messages by chatId
+- `kakaocli search "keyword" --json` — full-text search
+- `kakaocli send <chatId> "message"` — send by chatId (verifier-protected)
+- `kakaocli send --main "message"` — send to the operator's primary chat
+- `kakaocli send --me "message"` — send to self-chat (safe for testing)
 ```
 
 Or copy the skill file directly:
@@ -291,10 +367,10 @@ Add to your project rules or `.cursorrules`:
 
 ```
 You have access to kakaocli for KakaoTalk messaging.
-Run `kakaocli chats --json` to list chats.
-Run `kakaocli messages --chat "name" --since 1d --json` to read messages.
-Run `kakaocli send "name" "message"` to send messages.
-Always use --me flag when testing: `kakaocli send --me _ "test"`.
+Run `kakaocli chats --json` to list chats — each row's `id` is the chatId.
+Run `kakaocli messages --chat-id <id> --since 1d --json` to read messages.
+Run `kakaocli send <chatId> "message"` to send by chatId (verifier on).
+Always use --me flag when testing: `kakaocli send --me "test"`.
 Always ask for confirmation before sending messages to other people.
 ```
 

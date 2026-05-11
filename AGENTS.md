@@ -6,23 +6,29 @@ Instructions for AI agents that want to read and send KakaoTalk messages.
 
 - macOS 14+ with KakaoTalk desktop app installed
 - `kakaocli` binary built and in PATH (or run via `swift run kakaocli`)
-- System Settings > Privacy & Security: **Full Disk Access** + **Accessibility** granted to your terminal
-- KakaoTalk credentials stored (see First-Time Setup below)
+- System Settings > Privacy & Security: **Full Disk Access** + **Accessibility** granted to your terminal — `kakaocli init` triggers the prompts for you
 
 ## First-Time Setup
 
-Before using kakaocli, store credentials so the tool can auto-login:
+Two commands. `init` is the one-shot bootstrap; `login` stores credentials for auto-login on send/sync.
 
 ```bash
-# Store KakaoTalk credentials (saved in macOS Keychain)
+# 1) Bootstrap: trigger Accessibility / Full Disk Access prompts,
+#    recover userId, scaffold ~/.kakaocli/config.json + policy.json.
+kakaocli init
+
+# 2) Store KakaoTalk credentials (saved in macOS Keychain) so subsequent
+#    send/sync commands can auto-login the desktop app.
 kakaocli login --email user@example.com --password yourpassword
 
-# Verify everything is working
-kakaocli login --status
-# Expected output includes: "Stored credentials: Yes"
+# Verify
+kakaocli auth                # decryption + tables (label shows source: config / env / override / plist)
+kakaocli login --status      # expects: "Stored credentials: Yes"
 ```
 
-**Important for AI agents:** The `--password` flag is required in non-interactive contexts (scripts, automation, Claude Code). The interactive `kakaocli login` prompt uses `getpass()` which doesn't work outside a real terminal.
+`kakaocli init` is interactive (lists recent 1:1 chats so you pick a primary). For unattended setup pass `--non-interactive --primary-chat-id <id>` or `--non-interactive` alone (empty allowlist; you'll edit `policy.json` later).
+
+**Important for AI agents:** The `--password` flag on `kakaocli login` is required in non-interactive contexts (scripts, automation, Claude Code). The interactive prompt uses `getpass()` which doesn't work outside a real terminal.
 
 ### Credential Storage
 
@@ -81,20 +87,20 @@ KakaoTalk's macOS Accessibility (AX) hierarchy is non-standard:
 ## Quick Start
 
 ```bash
-# Verify database access
+# Verify the resolved operator config decrypts the DB
 kakaocli auth
 
-# List recent chats
+# List recent chats — the `id` field is the chatId, canonical across all commands
 kakaocli chats --json
 
 # Read messages from a specific chat
-kakaocli messages --chat "Mom" --since 1h --json
+kakaocli messages --chat-id 313526436723168 --since 1h --json
 
-# Send a message (auto-launches and logs in if needed)
-kakaocli send "Mom" "I'll be home soon"
+# Send by chatId (verifier-protected) — auto-launches and logs in if needed
+kakaocli send 313526436723168 "I'll be home soon"
 
 # Send to self-chat (for testing — ALWAYS use this for tests)
-kakaocli send x --me "Test message"
+kakaocli send --me "Test message"
 
 # Watch for new messages (NDJSON stream)
 kakaocli sync --follow
@@ -110,8 +116,8 @@ Returns: `[{"id", "type", "display_name", "member_count", "unread_count", "last_
 
 ### Read Messages
 ```bash
-kakaocli messages --chat "Name" --since 1h --json
-kakaocli messages --chat-id 12345 --limit 100 --json
+kakaocli messages --chat-id 313526436723168 --since 1h --json   # preferred
+kakaocli messages --chat "Name" --since 1h --json               # legacy substring
 ```
 Returns: `[{"id", "chat_id", "sender_id", "sender", "text", "type", "timestamp", "is_from_me"}]`
 
@@ -122,20 +128,51 @@ kakaocli search "keyword" --json
 
 ## Sending Messages
 
+chatId-first surface. The chatId path is gated by the send-policy verifier (see [Send Policy](#send-policy)); name path is the explicit legacy escape hatch.
+
 ```bash
-kakaocli send "Chat Name" "Message text"
-kakaocli send _ --me "Self-chat message"     # --me flag for self-chat
-kakaocli send _ --main "Notification"        # --main reads KAKAOCLI_MAIN_CHAT_NAME env
-kakaocli send "Mom" "Hello" --dry-run        # Preview without sending
+kakaocli send 313526436723168 "Hello"             # primary form — verifier on
+kakaocli send --main "Notification"                # policy.primaryChatId — verifier on
+kakaocli send --me "Self-chat message"             # self-chat — verifier exempt
+kakaocli send --name "Mom" "Hello"                 # legacy substring — no verifier
+kakaocli send 313526436723168 "Hello" --dry-run    # preview
+kakaocli send 313526436723168 "msg" --unsafe-no-verify   # explicit bypass
 ```
 
 **Important constraints:**
 - KakaoTalk is auto-launched if needed (no need to start it manually)
-- UI automation needs Accessibility permission granted to your terminal
+- UI automation needs Accessibility permission granted to your terminal — `kakaocli init` triggers the prompt
 - Rate limit: wait at least 2 seconds between sends
 - The chat window opens, types, sends, then closes automatically
-- The `--me` flag sends to self-chat regardless of the chat name argument (use `_` as placeholder)
-- The `--main` flag is the same pattern but reads the chat name from `KAKAOCLI_MAIN_CHAT_NAME` — use it from cron/agent scripts so the operator's primary-account name is not baked in. `--me` and `--main` are mutually exclusive.
+- `--me` / `--main` / `--name` are mutually exclusive
+- `--main` resolves to `policy.primaryChatId` (set during `kakaocli init`). Falls back to `KAKAOCLI_MAIN_CHAT_NAME` env var with a stderr deprecation warning — agents should rely on `policy.json` going forward.
+
+### Send Policy
+
+The chatId path (and HTTP `/reply`) is verified against `~/.kakaocli/policy.json`:
+
+```json
+{
+  "allowlist": [
+    { "chatId": 313526436723168, "expectedName": "전성욱", "expectedUserId": 68062272, "purpose": "primary_account_1on1" }
+  ],
+  "strictMode": false,
+  "denyByDefault": true,
+  "primaryChatId": 313526436723168
+}
+```
+
+| Scenario | strictMode | denyByDefault | Outcome |
+|----------|------------|---------------|---------|
+| chatId in allowlist, name + userId match | (any) | (any) | allow |
+| chatId in allowlist, name **or** userId mismatch | (any) | (any) | **deny** (impersonation) |
+| chatId not in allowlist | `true` | (any) | **deny** |
+| chatId not in allowlist | `false` | `true` | **deny** |
+| chatId not in allowlist | `false` | `false` | warn + allow |
+
+`expectedName` is a normalised substring match (NFC + trim + lowercase), so group titles with member-count suffixes still verify cleanly. `expectedUserId` pins 1:1 chats; null skips the check (groups, self-chat, open channels).
+
+Agents should rely on policy denials surfacing as `SendError.policyDenied` — distinct from `automationFailed`, so a Spring Boot orchestrator can react differently to "the chat moved" vs "AX broke".
 
 ## HTTP Server (Iris-Compatible)
 
@@ -169,12 +206,14 @@ Request:
 - `data`: the message body. KakaoTalk's ~10,000-char limit applies.
 - `threadId` (optional): accepted for Iris compatibility but currently ignored.
 
+Every request is run through the [send-policy verifier](#send-policy). HTTP has **no per-request bypass** — misconfiguration is strictly a `policy.json` edit, not a flag the network caller can flip.
+
 Response (always HTTP 200, except 5xx for genuine server faults):
 ```json
 {"success": true, "message": "sent to 전성욱 (chatId=313526436723168)"}
 ```
 
-Errors before the AX step (unknown chatId, invalid `room`, unsupported `type`) return `{"success": false, "message": "..."}` with HTTP 200, matching Iris semantics.
+Errors before the AX step (unknown chatId, invalid `room`, unsupported `type`, **policy denial**) return `{"success": false, "message": "..."}` with HTTP 200, matching Iris semantics. A policy denial includes the reason ("expectedUserId mismatch...", "strictMode is on and chatId X is not in the allowlist", etc.) so the orchestrator can react accordingly.
 
 `GET /health` returns `{"status":"ok"}` for liveness checks.
 
@@ -240,10 +279,10 @@ proc = subprocess.run(["kakaocli", "messages", "--since", "5m", "--json"],
                       capture_output=True, text=True)
 messages = json.loads(proc.stdout)
 
-# 2. Process and respond
+# 2. Process and respond — send by chatId so the verifier applies
 for msg in messages:
     if not msg["is_from_me"] and needs_response(msg):
-        subprocess.run(["kakaocli", "send", msg["chat_name"], response_text])
+        subprocess.run(["kakaocli", "send", str(msg["chat_id"]), response_text])
 ```
 
 ### Option B: HTTP (cross-host, Iris-compatible)
@@ -309,7 +348,10 @@ Returns JSON array with per-chat results:
 
 | Problem | Solution |
 |---------|----------|
+| `Send denied by policy: ... not in the allowlist` | chatId outside `~/.kakaocli/policy.json`. Add an entry (re-run `kakaocli init`) or pass `--unsafe-no-verify` on the CLI |
+| `Send denied by policy: expectedName mismatch` / `expectedUserId mismatch` | Chat moved or impersonation. Verify with `kakaocli chats --json`, then `kakaocli init --force` to re-pin if legitimate |
 | `Keychain error` | Run `kakaocli login --clear` then re-store credentials |
+| `User ID: not resolved` | Run `kakaocli init` — first-time setup recovers and persists the userId |
 | `No login window found` | KakaoTalk window may be hidden — run `kakaocli login --status` to check |
 | `Login did not succeed` | Verify credentials: `kakaocli login --email ... --password ...` |
 | `Chat not found` | Use exact substring match — run `kakaocli chats` to see available names |
