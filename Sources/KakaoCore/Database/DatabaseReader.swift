@@ -83,13 +83,29 @@ public final class DatabaseReader: @unchecked Sendable {
 
     // MARK: - Queries
 
+    /// SQL fragment producing the canonical name a user sees in the KakaoTalk
+    /// chat list for a group with no NTChatRoom.chatName. KakaoTalk stores
+    /// this in NTChatMeta as one of several columns; pick the first non-empty
+    /// across the rows for this chatId (NTChatMeta is keyed by chatId + type).
+    private static let chatMetaNameSubquery = """
+        (
+          SELECT COALESCE(NULLIF(groupNickname, ''), NULLIF(kakaoGroupName, ''))
+          FROM NTChatMeta
+          WHERE chatId = r.chatId
+            AND (NULLIF(groupNickname, '') IS NOT NULL
+                 OR NULLIF(kakaoGroupName, '') IS NOT NULL)
+          LIMIT 1
+        )
+        """
+
     /// List all chat rooms.
     public func chats(limit: Int = 50) throws -> [Chat] {
         let sql = """
             SELECT r.chatId, r.type, r.chatName, r.activeMembersCount,
                    r.lastLogId, r.lastUpdatedAt, r.countOfNewMessage,
                    u.displayName, u.friendNickName, u.nickName,
-                   r.displayMemberIds
+                   r.displayMemberIds,
+                   \(Self.chatMetaNameSubquery) AS metaName
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId = u.userId AND u.linkId = 0
             ORDER BY r.lastUpdatedAt DESC
@@ -105,22 +121,24 @@ public final class DatabaseReader: @unchecked Sendable {
                 lastUpdatedAt: row.optionalKakaoDate(5),
                 unreadCount: row.int(6),
                 friendUserName: row.string(7) ?? row.string(8) ?? row.string(9),
-                displayMemberIds: row.data(10)
+                displayMemberIds: row.data(10),
+                metaName: row.string(11)
             )
         }
         return rows.compactMap { try? toChat($0) }
     }
 
     /// Look up a single chat room by its chatId.
-    /// Returns nil if no row matches. Resolves displayName the same way as
-    /// `chats(limit:)` — NTChatRoom.chatName first, the direct-member user's
-    /// names next, and for groups the displayMemberIds roster joined to NTUser.
+    /// Returns nil if no row matches. displayName is resolved the same way as
+    /// `chats(limit:)`: NTChatRoom.chatName → NTChatMeta name (groupNickname /
+    /// kakaoGroupName) → direct-member user → synthesised group roster.
     public func chat(byChatId chatId: Int64) throws -> Chat? {
         let sql = """
             SELECT r.chatId, r.type, r.chatName, r.activeMembersCount,
                    r.lastLogId, r.lastUpdatedAt, r.countOfNewMessage,
                    u.displayName, u.friendNickName, u.nickName,
-                   r.displayMemberIds
+                   r.displayMemberIds,
+                   \(Self.chatMetaNameSubquery) AS metaName
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId = u.userId AND u.linkId = 0
             WHERE r.chatId = ?
@@ -136,7 +154,8 @@ public final class DatabaseReader: @unchecked Sendable {
                 lastUpdatedAt: row.optionalKakaoDate(5),
                 unreadCount: row.int(6),
                 friendUserName: row.string(7) ?? row.string(8) ?? row.string(9),
-                displayMemberIds: row.data(10)
+                displayMemberIds: row.data(10),
+                metaName: row.string(11)
             )
         }
         return try rows.first.map { try toChat($0) }
@@ -154,6 +173,7 @@ public final class DatabaseReader: @unchecked Sendable {
         let unreadCount: Int
         let friendUserName: String?
         let displayMemberIds: Data?
+        let metaName: String?
     }
 
     private func toChat(_ row: ChatRow) throws -> Chat {
@@ -171,15 +191,20 @@ public final class DatabaseReader: @unchecked Sendable {
     }
 
     private func resolveDisplayName(row: ChatRow, chatType: Chat.ChatType) throws -> String {
-        // 1. Custom-set chat name wins for any chat type.
+        // 1. Custom-set name on the room itself.
         if let chatName = row.chatName, !chatName.isEmpty {
             return chatName
         }
-        // 2. Direct-member name (works for 1:1 chats).
+        // 2. NTChatMeta-stored group name (matches what the KakaoTalk UI shows
+        //    for groups with a custom title even when NTChatRoom.chatName is empty).
+        if let metaName = row.metaName, !metaName.isEmpty {
+            return metaName
+        }
+        // 3. Direct-member name (works for 1:1 chats).
         if let userName = row.friendUserName, !userName.isEmpty {
             return userName
         }
-        // 3. Group chats: synthesise from member roster.
+        // 4. Group chats with no stored title: synthesise from member roster.
         if chatType == .group, let blob = row.displayMemberIds, !blob.isEmpty {
             if let synthesised = try? synthesiseGroupName(from: blob), !synthesised.isEmpty {
                 return synthesised
