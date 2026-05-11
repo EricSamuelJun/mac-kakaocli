@@ -6,3 +6,7 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 *.xcodeproj
+
+# Personal handoff notes — contains operator-specific identifiers.
+# Maintained locally per machine; not for the public fork.
+kakaocli-hermes-handoff.md
