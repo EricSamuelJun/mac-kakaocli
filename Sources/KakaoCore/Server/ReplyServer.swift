@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-/// Minimal HTTP/1.1 server exposing a single `POST /reply` endpoint
-/// compatible with the Iris bot's interface, plus `GET /health` for
-/// liveness checks.
+/// Minimal HTTP/1.1 server exposing the Iris-compatible `POST /reply` plus
+/// read-only chat lookup endpoints (`GET /chats`, `GET /chat/{room}`) and a
+/// `GET /health` liveness probe.
 ///
 /// Direct BSD-socket implementation (no external deps): bind+listen on a
 /// background queue, accept loop, then dispatch each connection onto a
@@ -17,6 +17,7 @@ public final class ReplyServer: @unchecked Sendable {
     private let bindHost: String
     private let bindPort: UInt16
     private let sender: MessageSender
+    private let db: DatabaseReader
     private let logger: ServerLogger
 
     private var listenSocket: Int32 = -1
@@ -27,10 +28,11 @@ public final class ReplyServer: @unchecked Sendable {
 
     private let maxRequestBytes = 1_048_576  // 1 MiB
 
-    public init(host: String, port: UInt16, sender: MessageSender, logger: ServerLogger) {
+    public init(host: String, port: UInt16, sender: MessageSender, db: DatabaseReader, logger: ServerLogger) {
         self.bindHost = host
         self.bindPort = port
         self.sender = sender
+        self.db = db
         self.logger = logger
     }
 
@@ -168,7 +170,20 @@ public final class ReplyServer: @unchecked Sendable {
             return
         }
         let method = parts[0]
-        let path = parts[1]
+        let rawTarget = parts[1]
+
+        // Split path and query string (everything after the first '?').
+        // Doing this manually rather than via URLComponents avoids needing a
+        // base URL and skips percent-decoding traps for our simple keys.
+        let path: String
+        let queryString: String
+        if let q = rawTarget.firstIndex(of: "?") {
+            path = String(rawTarget[..<q])
+            queryString = String(rawTarget[rawTarget.index(after: q)...])
+        } else {
+            path = rawTarget
+            queryString = ""
+        }
 
         let body = Data(raw.suffix(from: start))
 
@@ -178,6 +193,8 @@ public final class ReplyServer: @unchecked Sendable {
             handleReply(socket: socket, body: body)
         case ("GET", "/health"):
             writeJSON(socket: socket, status: 200, body: ["status": "ok"])
+        case ("GET", "/chats"):
+            handleListChats(socket: socket, query: queryString)
         default:
             logger.info("unhandled", ["method": method, "path": path])
             writeStatus(socket, status: 404, statusText: "Not Found", body: "Not found")
@@ -210,6 +227,48 @@ public final class ReplyServer: @unchecked Sendable {
             let resp = IrisResponse(success: false, message: "Internal error: \(error.localizedDescription)")
             writeJSON(socket: socket, status: 500, body: resp)
         }
+    }
+
+    // MARK: - Read-only chat lookup
+
+    private func handleListChats(socket: Int32, query: String) {
+        let params = Self.parseQuery(query)
+
+        let limit: Int
+        if let raw = params["limit"], !raw.isEmpty {
+            guard let n = Int(raw), n > 0 else {
+                logger.info("bad limit", ["raw": raw])
+                writeJSON(socket: socket, status: 400, body: IrisResponse(success: false, message: "limit must be a positive integer"))
+                return
+            }
+            limit = n
+        } else {
+            limit = 50
+        }
+
+        do {
+            let chats = try db.chats(limit: limit)
+            let payload = chats.map { ChatJSON(from: $0, directMemberUserId: nil) }
+            logger.info("chats", ["count": payload.count, "limit": limit])
+            writeJSON(socket: socket, status: 200, body: payload)
+        } catch {
+            logger.error("chats query failed", ["error": "\(error)"])
+            writeJSON(socket: socket, status: 500, body: IrisResponse(success: false, message: "Internal error: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Parse a URL-encoded query string (e.g. "limit=10&foo=bar") into a dict.
+    /// Values are percent-decoded; missing values map to "".
+    private static func parseQuery(_ s: String) -> [String: String] {
+        guard !s.isEmpty else { return [:] }
+        var out: [String: String] = [:]
+        for pair in s.split(separator: "&", omittingEmptySubsequences: true) {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(kv[0]).removingPercentEncoding ?? String(kv[0])
+            let val = kv.count > 1 ? (String(kv[1]).removingPercentEncoding ?? String(kv[1])) : ""
+            out[key] = val
+        }
+        return out
     }
 
     // MARK: - Response helpers
@@ -251,6 +310,54 @@ public final class ReplyServer: @unchecked Sendable {
         case 500: return "Internal Server Error"
         default: return "OK"
         }
+    }
+}
+
+/// Wire shape for chat lookup endpoints.
+///
+/// Snake-case keys match the existing `kakaocli chats --json` CLI output so
+/// downstream clients see one consistent schema for both transports. Optional
+/// fields are omitted via `encodeIfPresent` rather than serialised as `null`,
+/// so list responses stay compact for the common case (no per-row
+/// directMemberUserId lookup) while the single-chat endpoint can attach it.
+private struct ChatJSON: Encodable {
+    let id: Int64
+    let type: String
+    let displayName: String
+    let memberCount: Int
+    let unreadCount: Int
+    let lastMessageAt: String?
+    let directMemberUserId: Int64?
+
+    init(from chat: Chat, directMemberUserId: Int64?) {
+        self.id = chat.id
+        self.type = chat.type.rawValue
+        self.displayName = chat.displayName
+        self.memberCount = chat.memberCount
+        self.unreadCount = chat.unreadCount
+        self.lastMessageAt = chat.lastMessageAt.map { ISO8601DateFormatter().string(from: $0) }
+        self.directMemberUserId = directMemberUserId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case displayName = "display_name"
+        case memberCount = "member_count"
+        case unreadCount = "unread_count"
+        case lastMessageAt = "last_message_at"
+        case directMemberUserId = "direct_member_user_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(type, forKey: .type)
+        try c.encode(displayName, forKey: .displayName)
+        try c.encode(memberCount, forKey: .memberCount)
+        try c.encode(unreadCount, forKey: .unreadCount)
+        try c.encodeIfPresent(lastMessageAt, forKey: .lastMessageAt)
+        try c.encodeIfPresent(directMemberUserId, forKey: .directMemberUserId)
     }
 }
 

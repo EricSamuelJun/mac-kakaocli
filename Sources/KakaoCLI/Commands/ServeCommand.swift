@@ -38,7 +38,7 @@ struct ServeCommand: ParsableCommand {
         let logger = try ServerLogger(path: resolvedLog)
         let reader = try openDatabase(dbPath: db, key: key)
         let sender = LocalAXSender(automator: KakaoAutomator(), db: reader)
-        let server = ReplyServer(host: resolvedHost, port: UInt16(resolvedPort), sender: sender, logger: logger)
+        let server = ReplyServer(host: resolvedHost, port: UInt16(resolvedPort), sender: sender, db: reader, logger: logger)
 
         do {
             try server.start()
