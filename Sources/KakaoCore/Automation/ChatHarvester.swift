@@ -213,7 +213,8 @@ public enum ChatHarvester {
         for cell in AXHelpers.children(row) {
             guard AXHelpers.role(cell) == "AXCell" else { continue }
             for child in AXHelpers.children(cell) {
-                if AXHelpers.role(child) == "AXStaticText" && AXHelpers.identifier(child) == "_NS:18" {
+                let childId = AXHelpers.identifier(child)
+                if AXHelpers.role(child) == "AXStaticText" && (childId == "_NS:40" || childId == "_NS:18") {
                     return AXHelpers.value(child) ?? "(unknown)"
                 }
             }
