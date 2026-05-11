@@ -149,7 +149,7 @@ struct SendCommand: ParsableCommand {
     /// `KAKAOCLI_MAIN_CHAT_NAME` env var with a deprecation warning so
     /// existing cron / scripts don't snap.
     private func resolveMainTarget() throws -> Target {
-        if let policy = try? Policy.load(), let cid = policy?.primaryChatId {
+        if let cid = (try? Policy.load())?.primaryChatId {
             return .chatId(cid)
         }
         if let envName = ProcessInfo.processInfo.environment["KAKAOCLI_MAIN_CHAT_NAME"],
