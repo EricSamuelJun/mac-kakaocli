@@ -112,6 +112,37 @@ public final class DatabaseReader: @unchecked Sendable {
         }
     }
 
+    /// Look up a single chat room by its chatId.
+    /// Returns nil if no row matches. Resolves displayName the same way as
+    /// `chats(limit:)` — NTChatRoom.chatName first, then the direct-member
+    /// user's displayName / friendNickName / nickName.
+    public func chat(byChatId chatId: Int64) throws -> Chat? {
+        let sql = """
+            SELECT r.chatId, r.type, r.chatName, r.activeMembersCount,
+                   r.lastLogId, r.lastUpdatedAt, r.countOfNewMessage,
+                   u.displayName, u.friendNickName, u.nickName
+            FROM NTChatRoom r
+            LEFT JOIN NTUser u ON r.directChatMemberUserId = u.userId AND u.linkId = 0
+            WHERE r.chatId = ?
+            LIMIT 1
+            """
+        let results = try query(sql, bind: [.int64(chatId)]) { row -> Chat in
+            let chatName = row.string(2)
+            let userName = row.string(7) ?? row.string(8) ?? row.string(9)
+            let name = chatName ?? userName ?? "(unknown)"
+            return Chat(
+                id: row.int64(0),
+                type: Chat.ChatType.from(rawInt: row.int(1)),
+                displayName: name,
+                memberCount: row.int(3),
+                lastMessageId: row.optionalInt64(4),
+                lastMessageAt: row.optionalKakaoDate(5),
+                unreadCount: row.int(6)
+            )
+        }
+        return results.first
+    }
+
     /// Get messages for a chat, optionally filtered by time.
     public func messages(chatId: Int64? = nil, since: Date? = nil, limit: Int = 50) throws -> [Message] {
         var conditions: [String] = []
@@ -360,11 +391,12 @@ public final class DatabaseReader: @unchecked Sendable {
 
 extension Chat.ChatType {
     /// Map KakaoTalk's integer chat type to our enum.
+    /// Type 5 is the self-chat (나와의 채팅) — single-member room used for personal notes.
     static func from(rawInt: Int) -> Self {
-        // KakaoTalk uses integer types; exact mapping TBD via testing
         switch rawInt {
         case 0: return .direct
         case 1: return .group
+        case 5: return .selfChat
         default: return .unknown
         }
     }

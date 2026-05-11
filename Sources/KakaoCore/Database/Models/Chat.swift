@@ -14,6 +14,7 @@ public struct Chat: Sendable {
         case direct = "direct"
         case group = "group"
         case openChat = "open"
+        case selfChat = "self"
         case unknown = "unknown"
     }
 }
