@@ -412,6 +412,7 @@ kakaocli는 카카오톡의 로컬 SQLCipher 암호화 데이터베이스를 **�
 - **Incomplete message history.** KakaoTalk Mac only syncs messages from the server when you open a chat. If you haven't opened a chat on your Mac in a while (or ever), older messages won't be in the local database. Use `kakaocli harvest --scroll` to trigger loading older history, but this is limited by KakaoTalk's own sync behavior and the Talk Drive Plus paywall.
 - **Group chat names may show as `(unknown)`.** The database doesn't always store display names for group chats. Run `kakaocli harvest` to capture names from the UI.
 - **Sending requires KakaoTalk to be running.** Read commands work without the app open, but `send`, `sync`, and `harvest` need the KakaoTalk window. kakaocli launches and logs in automatically if credentials are stored.
+- **GUI session must be awake.** Accessibility automation talks to the WindowServer, which is only reachable from an active GUI login session. `send` / `harvest` / `serve` will silently fail (or time out with "did not become ready") when the Mac is in sleep mode, the display is locked at the login window, or only an SSH session is active. For unattended operation, keep the Mac logged in via Chrome Remote Desktop / a kiosk session and disable display sleep (`System Settings > Lock Screen`, `caffeinate -d`, or `pmset -a displaysleep 0` for desk machines).
 - **One Mac at a time.** KakaoTalk only allows one Mac logged in per account.
 - **Media and non-text messages.** Currently only text messages are fully supported. Photos, videos, stickers, and other media types are visible in the database but not rendered.
 
@@ -421,6 +422,7 @@ kakaocli는 카카오톡의 로컬 SQLCipher 암호화 데이터베이스를 **�
 - **불완전한 메시지 기록.** 카카오톡 Mac은 채팅을 열어야 서버에서 메시지를 동기화합니다. Mac에서 오래 열지 않은 채팅은 이전 메시지가 로컬 데이터베이스에 없을 수 있습니다. `kakaocli harvest --scroll`로 이전 메시지 로드를 시도할 수 있지만, 카카오톡 자체 동기화 및 톡드라이브 플러스 페이월에 의해 제한됩니다.
 - **그룹 채팅 이름이 `(unknown)`으로 표시될 수 있습니다.** `kakaocli harvest`를 실행하여 UI에서 이름을 수집하세요.
 - **전송 시 카카오톡 실행 필요.** 읽기 명령은 앱 없이 작동하지만, `send`, `sync`, `harvest`는 카카오톡 창이 필요합니다.
+- **GUI 세션 활성 상태 필요.** 접근성 자동화는 macOS GUI 세션의 WindowServer를 거치므로, Mac이 슬립 상태이거나 로그인 화면이 잠겨있거나 SSH 세션만 떠 있으면 `send` / `harvest` / `serve`가 조용히 실패합니다 ("did not become ready" 타임아웃). 무인 운영 시엔 GUI 로그인을 유지하고 (Chrome Remote Desktop 등) 디스플레이 슬립을 끄세요 (`시스템 설정 > 잠금 화면`, `caffeinate -d`, 또는 `pmset -a displaysleep 0`).
 - **계정당 Mac 1대.** 카카오톡은 계정당 하나의 Mac만 로그인을 허용합니다.
 - **미디어 및 비텍스트 메시지.** 현재 텍스트 메시지만 완전히 지원됩니다.
 
