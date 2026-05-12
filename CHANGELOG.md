@@ -1,5 +1,13 @@
 # Changelog
 
+### v0.11.0 - AppLifecycle multi-source cascade
+- `AppLifecycle.detectState` and `isRunning` no longer depend on `NSRunningApplication` alone. New `AppLifecycle.findProcess()` cascades through `NSRunningApplication` (in-process Cocoa) → `pgrep -x KakaoTalk` (kernel process table, session-independent). Any positive signal wins; only an all-negative result concludes "not running".
+- New public types `AppLifecycle.RunningProcess` (`{pid, source}`) and `DetectionSource` (`.nsRunningApp` / `.pgrep`) so callers can distinguish the cross-session case from the normal one.
+- Closes the v0.9.0-era failure mode where a LaunchAgent without `LimitLoadToSessionType=Aqua` would land in a session where `NSRunningApplication` returned empty for KakaoTalk, the lifecycle code mis-classified the state as `notRunning`, and `/reply` mis-launched the app on every request. `pgrep` sees the process regardless of session, so the cascade keeps the diagnosis truthful even when an operator's LaunchAgent or shell environment lacks Aqua.
+- `kakaocli doctor`'s "KakaoTalk running" check now reports the source: `[ok] pid 1234 (NSRunningApplication)` in the normal case, `[warn] pid 1234 via pgrep (NSRunningApp empty — session isolation suspected)` when the cascade rescues us. The warn case ships an actionable hint pointing at the Aqua pin.
+- Tests cover the cascade decision policy as a pure function (`cascadeWithSources(nsRunningPid:pgrepPid:)`): NSRunningApp wins when present, pgrep is the fallback, nil when both negative, priority is stable even on synthetic disagreements.
+- No public API change to `isRunning()` / `detectState()`; existing callers see strictly more accurate results. `NSRunningApplication.activate()` is still used to raise the window when the process was found via NSRunningApp; the pgrep path skips activation since cross-session activation is a no-op anyway.
+
 ### v0.10.0 - `kakaocli doctor` self-check
 - New `kakaocli doctor` command: runs 13 read-only checks against the operator environment and reports each as `[ok]` / `[warn]` / `[fail]`. Covers identity (userId source, `config.json`, `policy.json`), KakaoTalk app (installed, running, app state), macOS permissions (Accessibility, Full Disk Access), database (found, decryption), and operations (LaunchAgent plist + Aqua pin, bootstrapped, Keychain credentials).
 - `--json` flag for machine-readable output (snake_case keys + summary block), suitable for orchestrator health checks. Exit code `0` unless any check fails; warnings stay informational.

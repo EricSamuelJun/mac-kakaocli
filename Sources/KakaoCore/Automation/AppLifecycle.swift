@@ -12,33 +12,128 @@ public enum KakaoAppState: String, Sendable {
     case unknown
 }
 
+/// Which detection signal located the running KakaoTalk process.
+/// Surfaced so callers (and `kakaocli doctor`) can flag the cross-session
+/// case where pgrep sees the app but NSRunningApplication doesn't.
+public enum DetectionSource: String, Sendable {
+    /// `NSRunningApplication.runningApplications(withBundleIdentifier:)`.
+    /// In-process Cocoa lookup; only sees apps in the caller's session.
+    case nsRunningApp
+    /// `pgrep -x KakaoTalk`. Kernel process table; session-independent.
+    case pgrep
+}
+
+/// Resolved KakaoTalk process — pid plus which signal located it.
+public struct RunningProcess: Sendable {
+    public let pid: pid_t
+    public let source: DetectionSource
+}
+
 /// Manages KakaoTalk.app lifecycle: launch, state detection, readiness.
 public enum AppLifecycle {
 
     public static let bundleId = KakaoAutomator.bundleId
     public static let appPath = "/Applications/KakaoTalk.app"
 
+    // MARK: - Process Detection (multi-source cascade)
+
+    /// Locate a running KakaoTalk process, trying each detection source in
+    /// priority order. Any positive signal wins; we only conclude
+    /// "not running" when every source comes back empty.
+    ///
+    /// Order:
+    /// 1. `NSRunningApplication` — cheap, in-process. Correct for the normal
+    ///    "both KakaoTalk and the caller in the same Aqua session" case.
+    /// 2. `pgrep -x KakaoTalk` — subprocess, but session-independent. Catches
+    ///    the case where the caller is in a different launchd session (no
+    ///    Aqua pin on the LaunchAgent, SSH shell, etc.) — NSRunningApp
+    ///    silently returns an empty array there, which used to be diagnosed
+    ///    as "KakaoTalk not running" and triggered a useless re-launch.
+    public static func findProcess() -> RunningProcess? {
+        cascadeWithSources(
+            nsRunningPid: queryNSRunningApp(),
+            pgrepPid: queryPgrep()
+        )
+    }
+
+    /// Pure cascade decision, factored out for unit testing. Public callers
+    /// should use `findProcess()`; this signature exists so tests can feed
+    /// synthetic signals without hitting real IO.
+    internal static func cascadeWithSources(
+        nsRunningPid: pid_t?,
+        pgrepPid: pid_t?
+    ) -> RunningProcess? {
+        if let pid = nsRunningPid {
+            return RunningProcess(pid: pid, source: .nsRunningApp)
+        }
+        if let pid = pgrepPid {
+            return RunningProcess(pid: pid, source: .pgrep)
+        }
+        return nil
+    }
+
+    private static func queryNSRunningApp() -> pid_t? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+            .first?.processIdentifier
+    }
+
+    private static func queryPgrep() -> pid_t? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        // `-x` enforces an exact process-name match. KakaoTalk's executable
+        // is always `KakaoTalk` even when the app bundle is `카카오톡.app`.
+        proc.arguments = ["-x", "KakaoTalk"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard proc.terminationStatus == 0 else { return nil }
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        // pgrep emits one PID per line; take the first.
+        let firstLine = output.split(separator: "\n").first.map(String.init) ?? ""
+        let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        return pid_t(trimmed)
+    }
+
     // MARK: - State Detection
 
     public static func isRunning() -> Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).isEmpty
+        findProcess() != nil
     }
 
     /// Detect the current state of KakaoTalk.
     /// Set `aggressive: true` to try showing the window if hidden (slower, has side effects).
     /// Use `aggressive: false` when polling during login to avoid interfering.
     public static func detectState(aggressive: Bool = true) -> KakaoAppState {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else {
+        guard let proc = findProcess() else {
             return .notRunning
         }
 
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        let axApp = AXUIElementCreateApplication(proc.pid)
         var windows = AXHelpers.windows(axApp)
+
+        // `NSRunningApplication.activate()` is only usable when we located
+        // the process via NSRunningApp. If we found it via pgrep (i.e. it
+        // lives in a different session) we lack the API surface anyway —
+        // attempting to activate from the wrong session is a no-op and AX
+        // calls will still fail. We let the AX path run and report
+        // whatever it can; cross-session diagnosis is the caller's job.
+        let nsApp: NSRunningApplication? = (proc.source == .nsRunningApp)
+            ? NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
+            : nil
 
         if windows.isEmpty && aggressive {
             // KakaoTalk hides its window when "closed" (still running in menu bar).
             // Activate it to make windows visible, then re-check.
-            app.activate()
+            nsApp?.activate()
             Thread.sleep(forTimeInterval: 0.5)
             windows = AXHelpers.windows(axApp)
         }

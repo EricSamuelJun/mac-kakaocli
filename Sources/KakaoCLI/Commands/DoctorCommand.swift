@@ -161,13 +161,29 @@ struct DoctorCommand: ParsableCommand {
     }
 
     private func checkKakaoTalkRunning() -> Check {
-        if AppLifecycle.isRunning() {
-            return Check(name: "KakaoTalk running", status: .ok, detail: "process detected", hint: nil)
+        guard let proc = AppLifecycle.findProcess() else {
+            return Check(name: "KakaoTalk running",
+                         status: .warn,
+                         detail: "not running (NSRunningApp and pgrep both negative)",
+                         hint: "send/sync/harvest will auto-launch; otherwise: `open /Applications/KakaoTalk.app`")
         }
-        return Check(name: "KakaoTalk running",
-                     status: .warn,
-                     detail: "not running",
-                     hint: "send/sync/harvest will auto-launch; otherwise: `open /Applications/KakaoTalk.app`")
+        switch proc.source {
+        case .nsRunningApp:
+            return Check(name: "KakaoTalk running",
+                         status: .ok,
+                         detail: "pid \(proc.pid) (NSRunningApplication)",
+                         hint: nil)
+        case .pgrep:
+            // NSRunningApp empty but pgrep saw the process — almost certainly
+            // a session-isolation symptom (LaunchAgent missing Aqua pin, SSH
+            // shell, etc.). The cascade prevents a mis-classification as
+            // notRunning, but AX automation will likely still fail because
+            // WindowServer access is per-session.
+            return Check(name: "KakaoTalk running",
+                         status: .warn,
+                         detail: "pid \(proc.pid) via pgrep (NSRunningApp empty — session isolation suspected)",
+                         hint: "AX may still fail. Verify LaunchAgent `LimitLoadToSessionType=Aqua` and re-bootstrap. See §5.10 in the operator handoff.")
+        }
     }
 
     private func checkAppState() -> Check {
