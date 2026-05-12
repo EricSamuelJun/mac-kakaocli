@@ -60,6 +60,17 @@
         <string>/opt/homebrew/bin:/usr/bin:/bin</string>
     </dict>
 
+    <!--
+      Pin the agent to the user's Aqua (GUI) session. Without this, even
+      `launchctl bootstrap gui/<uid>` can put the process in a session where
+      `NSRunningApplication.runningApplications(withBundleIdentifier:)`
+      returns an empty array for KakaoTalk — `kakaocli serve` then mis-detects
+      the app as `notRunning` and every /reply times out with
+      "KakaoTalk launched but did not become ready within timeout".
+    -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
     <key>RunAtLoad</key>
     <true/>
 
