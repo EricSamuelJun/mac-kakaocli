@@ -13,6 +13,7 @@ struct PolicyCommand: ParsableCommand {
         subcommands: [
             PolicyListCommand.self,
             PolicyAddCommand.self,
+            PolicyManageCommand.self,
         ],
         defaultSubcommand: PolicyListCommand.self
     )
@@ -304,5 +305,281 @@ struct PolicyAddCommand: ParsableCommand {
         let aliasNote = entry.alias.map { " alias=\"\($0)\"" } ?? ""
         let pinNote = entry.expectedUserId.map { " userId=\($0)" } ?? ""
         print("Added [\(chosen.id)] \(chosen.displayName)\(aliasNote)\(pinNote)")
+    }
+}
+
+// MARK: - policy manage
+
+/// Edit (or remove) one allowlist entry. Defaults to an interactive menu
+/// for an operator at a terminal; passing any of the `--set-*` /
+/// `--pin-user-id` / `--make-primary` / `--remove` flags switches into the
+/// non-interactive path that Hermes / LLM agents use through skills.
+struct PolicyManageCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "manage",
+        abstract: "Modify or remove one entry on the allowlist.",
+        discussion: """
+            Run with just <chatId> for an interactive menu. Combine flags for
+            non-interactive edits (e.g. `policy manage 12345 --set-alias 49기방`).
+            `--make-primary` and `--remove` ask for confirmation unless
+            `--yes` is passed.
+            """
+    )
+
+    @Argument(help: "chatId of the entry to manage. Must already be on the allowlist.")
+    var chatId: Int
+
+    // --- non-interactive flags ---
+
+    @Option(name: .long, help: "Set alias (must be unique on the allowlist). Pass empty string to clear.")
+    var setAlias: String?
+
+    @Option(name: .long, help: "Set purpose. Pass empty string to clear.")
+    var setPurpose: String?
+
+    @Option(name: .long, help: "Set expectedName (must be non-empty).")
+    var setName: String?
+
+    @Flag(name: .long, help: "Pin expectedUserId, auto-resolved from NTChatRoom.directChatMemberUserId. 1:1 chats only.")
+    var pinUserId = false
+
+    @Flag(name: .long, help: "Clear expectedUserId so the verifier no longer cross-checks the friend's userId.")
+    var unpinUserId = false
+
+    @Flag(name: .long, help: "Make this chat the primaryChatId (replaces the existing primary; asks for confirmation unless --yes).")
+    var makePrimary = false
+
+    @Flag(name: .long, help: "Remove this entry from the allowlist (asks for confirmation unless --yes).")
+    var remove = false
+
+    @Flag(name: .long, help: "Skip confirmation prompts for destructive actions (--make-primary, --remove).")
+    var yes = false
+
+    @Option(name: .long, help: "Path to database file")
+    var db: String?
+
+    @Option(name: .long, help: "Database encryption key")
+    var key: String?
+
+    func validate() throws {
+        if pinUserId && unpinUserId {
+            throw ValidationError("--pin-user-id and --unpin-user-id are mutually exclusive.")
+        }
+    }
+
+    func run() throws {
+        var policy = try Policy.load() ?? Policy()
+        let target = Int64(chatId)
+
+        guard let idx = policy.allowlist.firstIndex(where: { $0.chatId == target }) else {
+            throw ValidationError("chatId \(target) is not on the allowlist. Add it first with `kakaocli policy add --chat-id \(target)`.")
+        }
+
+        let hasFlags = setAlias != nil || setPurpose != nil || setName != nil
+            || pinUserId || unpinUserId || makePrimary || remove
+
+        if hasFlags {
+            try applyFlags(policy: &policy, idx: idx, target: target)
+        } else {
+            try runInteractive(policy: &policy, idx: idx, target: target)
+        }
+
+        try policy.save()
+    }
+
+    // MARK: - Non-interactive
+
+    private func applyFlags(policy: inout Policy, idx: Int, target: Int64) throws {
+        // --remove short-circuits everything else.
+        if remove {
+            try confirmRemove(entry: policy.allowlist[idx])
+            let removed = policy.allowlist.remove(at: idx)
+            if policy.primaryChatId == removed.chatId {
+                policy.primaryChatId = nil
+                print("Note: this entry was the primaryChatId — cleared.")
+            }
+            print("Removed [\(removed.chatId)] \(removed.expectedName)")
+            return
+        }
+
+        if let newAlias = setAlias {
+            if newAlias.isEmpty {
+                policy.allowlist[idx].alias = nil
+            } else {
+                try ensureAliasFree(policy: policy, alias: newAlias, except: target)
+                policy.allowlist[idx].alias = newAlias
+            }
+        }
+        if let newPurpose = setPurpose {
+            policy.allowlist[idx].purpose = newPurpose
+        }
+        if let newName = setName {
+            if newName.isEmpty {
+                throw ValidationError("expectedName cannot be empty.")
+            }
+            policy.allowlist[idx].expectedName = newName
+        }
+        if pinUserId {
+            policy.allowlist[idx].expectedUserId = try resolveDirectMemberUserId(for: target)
+        }
+        if unpinUserId {
+            policy.allowlist[idx].expectedUserId = nil
+        }
+        if makePrimary {
+            try confirmPrimaryChange(policy: policy, target: target)
+            policy.primaryChatId = target
+        }
+
+        printEntry(policy: policy, idx: idx, prefix: "Updated")
+    }
+
+    // MARK: - Interactive
+
+    private func runInteractive(policy: inout Policy, idx: Int, target: Int64) throws {
+        let entry = policy.allowlist[idx]
+        let isPrimary = policy.primaryChatId == entry.chatId
+
+        print("Managing entry:")
+        print("  chatId:         \(entry.chatId)")
+        print("  expectedName:   \(entry.expectedName)")
+        print("  alias:          \(entry.alias ?? "(none)")")
+        print("  purpose:        \(entry.purpose.isEmpty ? "(none)" : entry.purpose)")
+        print("  expectedUserId: \(entry.expectedUserId.map(String.init) ?? "(unpinned)")")
+        print("  primary:        \(isPrimary ? "yes ★" : "no")")
+        print("")
+        print("Action:")
+        print("  [1] set alias")
+        print("  [2] set purpose")
+        print("  [3] set expectedName")
+        print("  [4] \(entry.expectedUserId == nil ? "pin expectedUserId from DB" : "unpin expectedUserId")")
+        if isPrimary {
+            print("  [5] (already primary — N/A)")
+        } else {
+            print("  [5] make primary (replaces current)")
+        }
+        print("  [6] remove entry")
+        print("  [7] cancel")
+        print("Select [1-7]:", terminator: " ")
+
+        guard let line = readLine(),
+              let n = Int(line.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...7).contains(n) else {
+            throw ValidationError("Invalid selection.")
+        }
+
+        switch n {
+        case 1:
+            print("New alias (blank to clear; current: \(entry.alias ?? "(none)")):", terminator: " ")
+            let raw = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if raw.isEmpty {
+                policy.allowlist[idx].alias = nil
+                print("Cleared alias.")
+            } else {
+                try ensureAliasFree(policy: policy, alias: raw, except: target)
+                policy.allowlist[idx].alias = raw
+                print("alias = \"\(raw)\"")
+            }
+
+        case 2:
+            print("New purpose (blank to clear; current: \(entry.purpose)):", terminator: " ")
+            let raw = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            policy.allowlist[idx].purpose = raw
+            print("purpose = \(raw.isEmpty ? "(empty)" : raw)")
+
+        case 3:
+            print("New expectedName (current: \(entry.expectedName)):", terminator: " ")
+            let raw = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if raw.isEmpty {
+                throw ValidationError("expectedName cannot be empty.")
+            }
+            policy.allowlist[idx].expectedName = raw
+            print("expectedName = \(raw)")
+
+        case 4:
+            if entry.expectedUserId == nil {
+                let uid = try resolveDirectMemberUserId(for: target)
+                policy.allowlist[idx].expectedUserId = uid
+                print("Pinned expectedUserId = \(uid)")
+            } else {
+                policy.allowlist[idx].expectedUserId = nil
+                print("Cleared expectedUserId.")
+            }
+
+        case 5:
+            if isPrimary {
+                print("Already primary. No change.")
+                return
+            }
+            try confirmPrimaryChange(policy: policy, target: target)
+            policy.primaryChatId = target
+            print("primaryChatId = \(target)")
+
+        case 6:
+            try confirmRemove(entry: entry)
+            policy.allowlist.remove(at: idx)
+            if policy.primaryChatId == entry.chatId {
+                policy.primaryChatId = nil
+                print("Note: this entry was the primaryChatId — cleared.")
+            }
+            print("Removed [\(entry.chatId)] \(entry.expectedName)")
+
+        case 7:
+            print("Cancelled. policy.json unchanged.")
+            throw ExitCode(0)
+
+        default:
+            throw ValidationError("Invalid selection.")
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func ensureAliasFree(policy: Policy, alias: String, except chatId: Int64) throws {
+        if policy.allowlist.contains(where: { $0.alias == alias && $0.chatId != chatId }) {
+            throw ValidationError("alias \"\(alias)\" is already used by another entry. Aliases must be unique.")
+        }
+    }
+
+    private func resolveDirectMemberUserId(for chatId: Int64) throws -> Int64 {
+        let reader = try openDatabase(dbPath: db, key: key)
+        defer { reader.close() }
+        guard let uid = (try? reader.directMemberUserId(forChatId: chatId)) ?? nil else {
+            throw ValidationError("Cannot pin expectedUserId — chat \(chatId) has no directChatMemberUserId in the DB (groups / channels can't be pinned).")
+        }
+        return uid
+    }
+
+    private func confirmPrimaryChange(policy: Policy, target: Int64) throws {
+        guard let current = policy.primaryChatId, current != target else { return }
+        if yes {
+            print("⚠ primaryChatId replaced: \(current) → \(target) (--yes, no prompt)")
+            return
+        }
+        let label = policy.allowlist.first(where: { $0.chatId == current })?.expectedName ?? "(unknown)"
+        print("⚠ primaryChatId is currently [\(current)] \(label). It will be replaced by [\(target)].")
+        print("Proceed? [y/N]:", terminator: " ")
+        let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if !(answer == "y" || answer == "yes") {
+            throw ValidationError("Aborted. policy.json unchanged.")
+        }
+    }
+
+    private func confirmRemove(entry: PolicyEntry) throws {
+        if yes { return }
+        print("⚠ Remove [\(entry.chatId)] \(entry.expectedName) from the allowlist?")
+        print("Proceed? [y/N]:", terminator: " ")
+        let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if !(answer == "y" || answer == "yes") {
+            throw ValidationError("Aborted. policy.json unchanged.")
+        }
+    }
+
+    private func printEntry(policy: Policy, idx: Int, prefix: String) {
+        let entry = policy.allowlist[idx]
+        print("\(prefix) [\(entry.chatId)] \(entry.expectedName)")
+        if let alias = entry.alias { print("  alias:          \(alias)") }
+        if !entry.purpose.isEmpty { print("  purpose:        \(entry.purpose)") }
+        if let uid = entry.expectedUserId { print("  expectedUserId: \(uid)") }
+        if policy.primaryChatId == entry.chatId { print("  ★ primary") }
     }
 }
