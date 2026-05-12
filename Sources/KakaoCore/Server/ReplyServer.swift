@@ -196,8 +196,15 @@ public final class ReplyServer: @unchecked Sendable {
         case ("GET", "/chats"):
             handleListChats(socket: socket, query: queryString)
         default:
-            logger.info("unhandled", ["method": method, "path": path])
-            writeStatus(socket, status: 404, statusText: "Not Found", body: "Not found")
+            // Path-parameterised routes (handled here because a static switch
+            // can't bind path segments).
+            if method == "GET" && path.hasPrefix("/chat/") {
+                let idSegment = String(path.dropFirst("/chat/".count))
+                handleGetChat(socket: socket, idSegment: idSegment)
+            } else {
+                logger.info("unhandled", ["method": method, "path": path])
+                writeStatus(socket, status: 404, statusText: "Not Found", body: "Not found")
+            }
         }
     }
 
@@ -253,6 +260,34 @@ public final class ReplyServer: @unchecked Sendable {
             writeJSON(socket: socket, status: 200, body: payload)
         } catch {
             logger.error("chats query failed", ["error": "\(error)"])
+            writeJSON(socket: socket, status: 500, body: IrisResponse(success: false, message: "Internal error: \(error.localizedDescription)"))
+        }
+    }
+
+    private func handleGetChat(socket: Int32, idSegment: String) {
+        // Reject anything that isn't a bare numeric segment so paths like
+        // /chat/123/extra fall through to 404 (or here, 400).
+        guard !idSegment.isEmpty,
+              !idSegment.contains("/"),
+              let chatId = Int64(idSegment) else {
+            writeJSON(socket: socket, status: 400, body: IrisResponse(success: false, message: "Invalid chatId: \(idSegment)"))
+            return
+        }
+
+        do {
+            guard let chat = try db.chat(byChatId: chatId) else {
+                logger.info("chat not found", ["chatId": chatId])
+                writeJSON(socket: socket, status: 404, body: IrisResponse(success: false, message: "Chat not found"))
+                return
+            }
+            // For 1:1 chats this is the friend's userId; for groups / channels
+            // the helper returns nil and encodeIfPresent drops the key.
+            let directMember: Int64? = (try? db.directMemberUserId(forChatId: chatId)) ?? nil
+            let payload = ChatJSON(from: chat, directMemberUserId: directMember)
+            logger.info("chat", ["chatId": chatId])
+            writeJSON(socket: socket, status: 200, body: payload)
+        } catch {
+            logger.error("chat lookup failed", ["chatId": chatId, "error": "\(error)"])
             writeJSON(socket: socket, status: 500, body: IrisResponse(success: false, message: "Internal error: \(error.localizedDescription)"))
         }
     }
