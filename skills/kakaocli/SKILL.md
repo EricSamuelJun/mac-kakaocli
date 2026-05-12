@@ -1,7 +1,7 @@
 ---
 name: kakaocli
-description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server. Resolves operator-curated aliases ("49기방", "유희왕 방", ...) to chatIds via `kakaocli policy list --json`, so agents never need to handle raw chat names.
-version: 0.9.0
+description: Send and receive KakaoTalk messages via an HTTP backend (preferred in webhook / unattended sessions) or CLI subprocess (fallback). Resolves operator-curated aliases ("49기방", "유희왕 방", ...) to chatIds via `kakaocli policy list --json`, so agents never need to handle raw chat names. Never wrap subprocess calls in shell pipelines — host safety classifiers treat that as a dangerous command and block on approval.
+version: 0.12.2
 requires:
   binaries:
     - kakaocli
@@ -52,6 +52,60 @@ kakaocli messages --chat-id <chat_id> --since 1h --json
 2. *Optional helper*: `kakaocli chats --json --limit 50` once, surface 1-3 candidates whose `display_name` contains the label.
 3. Ask the operator to run `kakaocli policy add --chat-id <id> --alias "<label>" --purpose "<note>"`.
 4. After they confirm, re-read the policy (`policy list --json`) and proceed.
+
+## Execution method preference (Hermes / LLM agents)  ★ READ THIS FIRST IN WEBHOOK CONTEXTS
+
+In webhook-triggered or unattended sessions, **prefer the HTTP backend** for any
+operation that has one. The risk is not `kakaocli` itself — it's the LLM wrapping
+the call in a shell pipeline (`curl ... | jq | python3 - <<EOF`), which a host
+agent's safety classifier flags as a "dangerous command" and parks behind a
+human approval gate that **never resolves in webhook context**. Observed cost:
+~6× the typical response time (~6 minutes vs ~30-60 s for a normal turn).
+
+| Operation | Preferred (fast-path) | Fallback (subprocess) |
+|---|---|---|
+| Send a message | `POST /reply` | `kakaocli send <chatId> "..."` |
+| List chats | `GET /chats?limit=N` | `kakaocli chats --json` |
+| Single chat info | `GET /chat/<chatId>` | `kakaocli inspect --open-chat-id <id>` |
+| Health check | `GET /health` | — |
+| Read messages | (no HTTP yet) | `kakaocli messages --chat-id <id> --json` |
+| Verify a command | (no HTTP yet) | `kakaocli policy verify-command ...` |
+| Harvest history | (no HTTP yet) | `kakaocli harvest --chat-id <id>` |
+| Inspect AX tree | (no HTTP yet) | `kakaocli inspect --depth N` |
+| Sync stream | (handled by LaunchAgent) | `kakaocli sync --follow --exclude-self ...` |
+
+The HTTP backend (`kakaocli serve` on `127.0.0.1:8080` via the shipped
+LaunchAgent) is designed for exactly this — orchestrators call it with their
+native HTTP / `web_fetch` tool, no shell process involved, no safety
+classifier triggered.
+
+**When subprocess is unavoidable** (any "no HTTP yet" row above), call
+`kakaocli` directly with an argv list. Do **not** wrap it in a shell pipeline
+just to extract a field — the CLI already exposes `--json` for everything
+read-shaped, and policy/verifier exits are direct exit codes.
+
+✅ DO — single argv invocation, no shell:
+```python
+result = subprocess.run([
+    "kakaocli", "policy", "verify-command",
+    "--sender-id", "68062272",
+    "--message",   text,
+    "--permission", "web",
+], capture_output=True, text=True)
+# Branch on result.returncode (0 / 1 / 2). The CLI does the parsing for you.
+```
+
+❌ DON'T — shell pipeline triggers the dangerous-command classifier:
+```python
+subprocess.run(
+    "kakaocli policy verify-command --sender-id 68062272 ... | "
+    "jq -r '.decision' | python3 -c 'import sys; ...'",
+    shell=True,
+)
+```
+
+The same shape applies in TypeScript, Go, or any subprocess API: pass argv as
+an array, parse `--json` output or the exit code in your own language.
 
 ## Resolving Natural-Language Labels (Hermes / LLM agents)
 
@@ -113,7 +167,10 @@ kakaocli harvest --chat-ids 313526436723168,468542230323777
 
 `messages` / `search` / `inspect` / `harvest` all take chatId. The `--chat` / `--open-chat` / `--name` variants exist for legacy compatibility only.
 
-## HTTP Backend (Iris-compatible)
+## HTTP Backend (Iris-compatible)  ★ fast-path for webhook / unattended LLM sessions
+
+See [Execution method preference](#execution-method-preference-hermes--llm-agents--read-this-first-in-webhook-contexts) above for *when* to pick this over subprocess. In short: any operation listed in the preferred column should be invoked via the LLM's HTTP / `web_fetch` tool against `http://127.0.0.1:8080`, not via subprocess. Subprocess is the documented fallback for the read paths that don't have HTTP yet.
+
 
 ```bash
 # Start (foreground / dev)

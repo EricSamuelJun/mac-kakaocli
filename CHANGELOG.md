@@ -1,5 +1,13 @@
 # Changelog
 
+### v0.12.2 - SKILL.md fast-path guidance (Hermes dangerous-command gate)
+- SKILL.md gets a new "Execution method preference" section near the top, marked `★ READ THIS FIRST IN WEBHOOK CONTEXTS`. It pins **HTTP backend as the fast-path** for any operation that has one, with the operation-by-operation table the operator can read at a glance. The rationale is the observed ~6× slowdown when an LLM in a webhook session wraps `kakaocli` in a bash pipeline (`curl | jq | python3 - <<EOF`) and the host's safety classifier parks the call behind a human approval gate that never resolves.
+- The same section ships the ✅/❌ pattern: pass argv as an array (`subprocess.run(["kakaocli", ...])`) when subprocess is the only path; do not wrap in shell pipelines just to extract a field. The CLI already exposes `--json` and direct exit codes for everything that matters.
+- The existing "HTTP Backend (Iris-compatible)" section gains a `★ fast-path` marker pointing back to the preference section, so an LLM that skips the TL;DR still sees the recommendation in context.
+- AGENTS.md "Agent Integration Pattern" gets the same operation table and the same don't-wrap-in-shell warning, before the Option A / B / C transport breakdown so the choice criterion shows up before the choices.
+- SKILL.md frontmatter `version` updated from 0.9.0 (lagging) to 0.12.2 to track the CLI release. `description` field rewritten to lead with the HTTP-preferred posture and the shell-pipeline caveat — host classifiers also read frontmatter `description` for skill ranking.
+- No Swift code change. This is the operator-handoff fix for the 5min 58s response-time finding (Hermes session blocked on a `web_fetch` substitute the LLM built with `curl + heredoc + jq + python`).
+
 ### v0.12.1 - Option C wiring (LaunchAgent template + docs)
 - New `deploy/launchd/com.kakaocli.sync.plist.template` runs `kakaocli sync --follow --exclude-self --webhook <url>` in the Aqua session. Sits alongside `com.kakaocli.serve.plist.template`; together they cover outbound (HTTP `/reply`) and inbound (NDJSON / webhook) for unattended operation.
 - README "Configuration" gains an "Inbound commands (Option C, opt-in)" subsection covering the three new policy fields, the `verify-command` exit-code contract, and a pointer to SKILL.md for the dispatcher pattern.

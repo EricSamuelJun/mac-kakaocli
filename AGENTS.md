@@ -453,7 +453,20 @@ The shipped template runs `kakaocli sync --follow --exclude-self --webhook <url>
 
 ## Agent Integration Pattern
 
-Pick the transport that fits your agent:
+Pick the transport that fits your agent. In **webhook-triggered or unattended sessions** (Hermes, scheduled cron, anything where there's no human at the console), **prefer the HTTP backend** (Option B) for operations that have one — the LLM uses its native HTTP / `web_fetch` tool and no shell process is spawned. When subprocess (Option A) is unavoidable, **pass argv as an array, never a shell string** — wrapping `kakaocli` in a bash pipeline (`kakaocli ... | jq | python3 - <<EOF`) trips host safety classifiers and parks the call behind an approval gate that never resolves in webhook context (observed cost: ~6× the typical response time).
+
+Operation → preferred transport:
+
+| Operation | Preferred (fast) | Fallback (subprocess argv) |
+|---|---|---|
+| Send | `POST /reply` | `kakaocli send <chatId> "..."` |
+| List chats | `GET /chats?limit=N` | `kakaocli chats --json` |
+| Single chat info | `GET /chat/<chatId>` | `kakaocli inspect --open-chat-id <id>` |
+| Read messages | (no HTTP yet) | `kakaocli messages --chat-id <id> --json` |
+| Verify a command | (no HTTP yet) | `kakaocli policy verify-command ...` |
+| Harvest history | (no HTTP yet) | `kakaocli harvest --chat-id <id>` |
+| Inspect AX tree | (no HTTP yet) | `kakaocli inspect --depth N` |
+| Sync stream | (handled by LaunchAgent) | `kakaocli sync --follow --exclude-self ...` |
 
 ### Option A: CLI subprocess (same host)
 
