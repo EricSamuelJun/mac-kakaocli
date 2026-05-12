@@ -90,4 +90,42 @@ final class PolicyTests: XCTestCase {
         let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
         XCTAssertEqual(perms & 0o777, 0o600)
     }
+
+    func testAliasRoundTrips() throws {
+        let entry = PolicyEntry(
+            chatId: 468_542_230_323_777,
+            expectedName: "테스트",
+            expectedUserId: nil,
+            purpose: "test_group",
+            alias: "49기방"
+        )
+        try Policy(allowlist: [entry]).save(to: policyPath)
+        let loaded = try Policy.load(from: policyPath)
+        XCTAssertEqual(loaded?.allowlist.first?.alias, "49기방")
+    }
+
+    func testLoadingLegacyEntryWithoutAliasFieldYieldsNil() throws {
+        // policy.json files written before the alias field was added must
+        // continue to load; the field decodes as nil.
+        let legacy = #"""
+        {
+          "version": 1,
+          "allowlist": [
+            {
+              "chatId": 313526436723168,
+              "expectedName": "전성욱",
+              "expectedUserId": 68062272,
+              "purpose": "primary_account_1on1"
+            }
+          ],
+          "strictMode": false,
+          "denyByDefault": true,
+          "primaryChatId": 313526436723168
+        }
+        """#
+        try legacy.data(using: .utf8)!.write(to: URL(fileURLWithPath: policyPath))
+        let loaded = try Policy.load(from: policyPath)
+        XCTAssertEqual(loaded?.allowlist.count, 1)
+        XCTAssertNil(loaded?.allowlist.first?.alias)
+    }
 }

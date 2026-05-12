@@ -13,17 +13,24 @@ public struct PolicyEntry: Codable, Sendable {
     /// Short human label for what this entry is for ("primary_account_1on1",
     /// "ops_alerts", etc.). Free-form; not consumed by any verifier yet.
     public var purpose: String
+    /// Optional human-friendly alias used by external orchestrators (e.g.
+    /// Hermes resolving "49기방" → chatId). Aliases must be unique across the
+    /// allowlist — duplicates would make the reverse mapping ambiguous — but
+    /// uniqueness is enforced at edit time (CLI), not by the type itself.
+    public var alias: String?
 
     public init(
         chatId: Int64,
         expectedName: String,
         expectedUserId: Int64? = nil,
-        purpose: String
+        purpose: String,
+        alias: String? = nil
     ) {
         self.chatId = chatId
         self.expectedName = expectedName
         self.expectedUserId = expectedUserId
         self.purpose = purpose
+        self.alias = alias
     }
 }
 
