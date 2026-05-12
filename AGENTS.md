@@ -217,6 +217,45 @@ Errors before the AX step (unknown chatId, invalid `room`, unsupported `type`, *
 
 `GET /health` returns `{"status":"ok"}` for liveness checks.
 
+### Read-only Lookup Endpoints
+
+`GET /chats?limit=N` — same shape as `kakaocli chats --json`. Default limit `50`, must be a positive integer; non-integer / non-positive values return HTTP 400.
+
+```bash
+curl -s 'http://127.0.0.1:8080/chats?limit=10' | jq
+```
+```json
+[
+  {
+    "id": 313526436723168,
+    "type": "direct",
+    "display_name": "전성욱",
+    "member_count": 2,
+    "unread_count": 0,
+    "last_message_at": "2026-05-12T10:38:39Z"
+  }
+]
+```
+
+`GET /chat/{chatId}` — single chat lookup. Adds `direct_member_user_id` for 1:1 chats so callers can pin the expected friend userId before posting to `/reply`. The key is omitted for groups / channels where it has no meaning. `404 {success:false, message:"Chat not found"}` for unknown chatIds; `400` for non-numeric path segments.
+
+```bash
+curl -s http://127.0.0.1:8080/chat/313526436723168 | jq
+```
+```json
+{
+  "id": 313526436723168,
+  "type": "direct",
+  "display_name": "전성욱",
+  "member_count": 2,
+  "unread_count": 0,
+  "last_message_at": "2026-05-12T10:38:39Z",
+  "direct_member_user_id": 68062272
+}
+```
+
+These read endpoints are not policy-gated — they expose the same data `kakaocli chats` / `kakaocli messages` already surface from the CLI on the same host. Treat them as the orchestrator's "what do I have to send to?" probe.
+
 ### Running Unattended (LaunchAgent)
 
 macOS isolates SSH sessions from the WindowServer / Accessibility APIs, so `kakaocli serve` started over SSH listens on the port but every `/reply` request fails with `"did not become ready within timeout"` when it tries to drive the UI. Launching the server inside the user's GUI session via `launchctl` fixes this. A plist template ships in the repo:

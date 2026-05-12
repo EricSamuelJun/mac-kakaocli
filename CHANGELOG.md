@@ -1,5 +1,12 @@
 # Changelog
 
+### v0.7.0 - HTTP read endpoints (Phase 3 gate)
+- `GET /chats?limit=N` returns the chat list in the same snake_case schema as `kakaocli chats --json`. Default limit `50`; non-integer or non-positive `limit` returns HTTP 400.
+- `GET /chat/{chatId}` returns a single chat. Adds `direct_member_user_id` for 1:1 chats (omitted via `encodeIfPresent` for groups / channels). `404 {success:false, message:"Chat not found"}` for unknown chatIds; `400` for non-numeric path segments.
+- Read endpoints are intentionally **not** policy-gated — they expose the same data the CLI's `chats` / `messages` already surface on the same host. `POST /reply` remains the only write surface and stays verifier-gated.
+- `ReplyServer` now takes a shared `DatabaseReader` alongside the `MessageSender` so the read path reuses the same connection.
+- README "Known Limitations" calls out the GUI-session requirement explicitly: `send` / `harvest` / `serve` silently fail when the WindowServer is unreachable (sleep mode, locked login window, SSH-only session). Practical knobs (`caffeinate -d`, `pmset -a displaysleep 0`, CRD-kept session) are listed.
+
 ### v0.6.0 - Init, Config, Send Policy (Phase 2 잔여)
 - `init` command: one-shot first-time setup — triggers Accessibility / Full Disk Access prompts, recovers userId, scaffolds `~/.kakaocli/config.json` + `policy.json`. Flags: `--non-interactive`, `--force`, `--skip-permissions`, `--primary-chat-id`, `--max-seconds`.
 - `~/.kakaocli/config.json` for persistent operator identity. Resolution order for `userId`: `KAKAOCLI_USER_ID` env var → config.json → plist heuristics.

@@ -1,7 +1,7 @@
 ---
 name: kakaocli
 description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server
-version: 0.6.0
+version: 0.7.0
 requires:
   binaries:
     - kakaocli
@@ -75,6 +75,10 @@ kakaocli serve --log -
 curl -s -X POST http://127.0.0.1:8080/reply \
   -H "Content-Type: application/json" \
   -d '{"type":"text","room":"<chatId>","data":"hello"}'
+
+# Look up chats (read-only, not policy-gated) — useful when the caller only knows a name.
+curl -s 'http://127.0.0.1:8080/chats?limit=20' | jq
+curl -s http://127.0.0.1:8080/chat/<chatId> | jq   # adds direct_member_user_id for 1:1 chats
 
 # Health check
 curl -s http://127.0.0.1:8080/health

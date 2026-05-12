@@ -204,14 +204,16 @@ KAKAOCLI_SERVE_HOST=0.0.0.0 KAKAOCLI_SERVE_PORT=8080 kakaocli serve
 ```
 
 Endpoints:
-- `POST /reply` — body `{"type":"text","room":"<chatId>","data":"<message>","threadId":null}` (the `threadId` field is accepted for Iris compatibility but currently ignored)
-- `GET /health` — `{"status":"ok"}`
+- `POST /reply` — body `{"type":"text","room":"<chatId>","data":"<message>","threadId":null}` (the `threadId` field is accepted for Iris compatibility but currently ignored). Send-policy gated, **no per-request bypass**.
+- `GET /chats?limit=N` — chat list in the same shape as `kakaocli chats --json`. Default limit `50`, must be a positive integer.
+- `GET /chat/{room}` — single chat by chatId. Adds `direct_member_user_id` (omitted for groups / channels). Returns `404` + `{success:false}` for unknown chatIds.
+- `GET /health` — `{"status":"ok"}`.
 
-`room` is the numeric KakaoTalk chatId as a string. Look it up with `kakaocli chats --json` or `kakaocli query "SELECT chatId FROM NTChatRoom WHERE ..."`.
+`room` is the numeric KakaoTalk chatId as a string. Look it up with `kakaocli chats --json`, `kakaocli query "SELECT chatId FROM NTChatRoom WHERE ..."`, or `GET /chats` over HTTP.
 
-Every `/reply` is gated by the send-policy verifier — chatIds outside `~/.kakaocli/policy.json` are denied when `denyByDefault` or `strictMode` is on. The HTTP path has **no per-request bypass**; misconfiguration is strictly a `policy.json` edit. See [Configuration](#configuration--설정).
+Every `/reply` is gated by the send-policy verifier — chatIds outside `~/.kakaocli/policy.json` are denied when `denyByDefault` or `strictMode` is on. The HTTP path has **no per-request bypass**; misconfiguration is strictly a `policy.json` edit. See [Configuration](#configuration--설정). The read endpoints (`/chats`, `/chat/{room}`) are **not** policy-gated — they expose the same data `kakaocli chats` and `kakaocli messages` already produce from the CLI on the same host.
 
-`room`은 카카오톡 chatId(숫자)를 문자열로 받습니다. `kakaocli chats --json` 또는 `kakaocli query`로 조회하세요. 모든 `/reply` 호출은 정책 verifier를 통과해야 하며, HTTP 경로에는 per-request 우회 옵션이 없습니다.
+`room`은 카카오톡 chatId(숫자)를 문자열로 받습니다. `kakaocli chats --json`, `kakaocli query`, 또는 HTTP `GET /chats`로 조회하세요. 모든 `/reply` 호출은 정책 verifier를 통과해야 하며, HTTP 경로에는 per-request 우회 옵션이 없습니다. 읽기 엔드포인트(`/chats`, `/chat/{room}`)는 정책 검증 대상이 아닙니다 — 같은 호스트의 `kakaocli chats` / `kakaocli messages`가 이미 노출하는 데이터입니다.
 
 #### Running as a LaunchAgent (recommended for production)
 
