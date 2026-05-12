@@ -21,12 +21,13 @@
 
 kakaocli lets AI agents (Claude Code, Cursor, custom bots) check and send your KakaoTalk messages — something Kakao's official APIs simply can't do.
 
-- **AI Agent Integration** — JSON output for every command, MCP skill definition, webhook delivery, auto-login
+- **AI Agent Integration** — three-tier model (`kakaocli` primitives + optional deterministic gatekeeper + LLM dispatcher), HTTP-preferred for unattended sessions, JSON output for every command, MCP skill definition, webhook delivery, auto-login
 - **Init** — guided first-time setup: permissions, multi-threaded userId recovery, config and policy scaffolding
+- **Doctor** — 13-check environment self-diagnostic (`[ok]` / `[warn]` / `[fail]`), `--json` for orchestrator health checks
 - **Read** — list chats, view messages, full-text search, raw SQL queries
-- **Send** — chatId-first send with optional policy allowlist enforcement (impersonation defence)
-- **Serve** — Iris-compatible HTTP server (`POST /reply`) so an orchestrator can swap kakaocli ↔ Iris backends without changing client code
-- **Sync** — real-time NDJSON message stream with webhook support
+- **Send** — chatId-first send with defense-in-depth policy verifier (allowlist + name + userId + AX header cross-check)
+- **Serve** — Iris-compatible HTTP server (`POST /reply`, `GET /chats`, `GET /chat/{id}`) so an orchestrator can swap kakaocli ↔ Iris backends without changing client code
+- **Sync** — real-time NDJSON message stream with webhook support and `--exclude-self` loop prevention for inbound command flows
 - **Harvest** — bulk-capture chat names and load older message history
 
 ### Why?
@@ -37,12 +38,13 @@ Kakao's official APIs cannot read chat history, export conversations, or send fr
 
 kakaocli는 AI 에이전트(Claude Code, Cursor, 커스텀 봇)가 카카오톡 메시지를 확인하고 보낼 수 있게 해줍니다 — 카카오 공식 API로는 불가능한 기능입니다.
 
-- **AI 에이전트 연동** — 모든 명령의 JSON 출력, MCP 스킬 정의, 웹훅 전달, 자동 로그인
+- **AI 에이전트 연동** — 3-tier 모델 (`kakaocli` primitive + 선택적 deterministic 게이트키퍼 + LLM 디스패처), 무인 세션은 HTTP fast-path, 모든 명령 JSON 출력, MCP 스킬, 웹훅 전달, 자동 로그인
 - **초기화** — 권한 안내, 멀티스레드 userId 복원, config/policy 스캐폴딩을 한 번에
+- **자가진단** — 13개 환경 점검 (`[ok]` / `[warn]` / `[fail]`), `--json` 옵션으로 오케스트레이터 헬스체크
 - **읽기** — 채팅 목록, 메시지 조회, 전체 텍스트 검색, SQL 쿼리
-- **전송** — chatId 기반 송신 + 정책 allowlist 검증 (사칭 방어)
-- **HTTP 서버** — Iris 호환 `POST /reply` 엔드포인트. 오케스트레이터가 kakaocli ↔ Iris 백엔드를 클라이언트 코드 변경 없이 교체 가능
-- **동기화** — 실시간 NDJSON 메시지 스트림 및 웹훅 지원
+- **전송** — chatId 기반 송신 + 다층 검증 (allowlist + name + userId + AX 헤더 cross-check)
+- **HTTP 서버** — Iris 호환 (`POST /reply`, `GET /chats`, `GET /chat/{id}`). 오케스트레이터가 kakaocli ↔ Iris 백엔드를 클라이언트 코드 변경 없이 교체 가능
+- **동기화** — 실시간 NDJSON 메시지 스트림 + 웹훅 + `--exclude-self` (인바운드 명령 흐름의 루프 방지)
 - **수집** — 채팅방 이름 일괄 수집 및 이전 메시지 로드
 
 ### 왜 필요한가요?
@@ -414,6 +416,57 @@ kakaocli policy verify-command \
 The end-to-end flow is documented in [skills/kakaocli/SKILL.md](skills/kakaocli/SKILL.md#inbound-command-processing-option-c) — the dispatcher subscribes to `kakaocli sync --follow --exclude-self`, extracts intent via the LLM, calls `verify-command`, and branches on the exit code. The LaunchAgent template at `deploy/launchd/com.kakaocli.sync.plist.template` runs that subscription in the Aqua session.
 
 기본값은 인바운드 카톡 메시지를 대화로만 처리합니다. Option C는 명시적 opt-in — 위 세 필드를 `policy.json`에 추가하면 prefix로 시작하는 메시지만 명령으로 해석되고, ACL/role로 권한이 제한됩니다. 디스패처 (Hermes 등)는 `kakaocli policy verify-command`를 호출해 exit code (0/1/2)로 분기합니다.
+
+## Architecture & Integration Model / 아키텍처와 통합 모델
+
+kakaocli is the **data-plane primitive** for KakaoTalk on macOS — it reads the local SQLCipher database and drives the native app via Accessibility APIs. Production deployments typically layer a deterministic gatekeeper and an LLM-driven dispatcher on top, in a three-tier model where each component owns one concern.
+
+kakaocli는 macOS 카카오톡의 **데이터-플레인 primitive**입니다 — 로컬 SQLCipher DB 읽기 + AX API 자동화 담당. 운영 환경에서는 그 위에 deterministic 게이트키퍼와 LLM 디스패처를 얹는 3-tier 구성이 표준입니다.
+
+```
+   Outbound (send / read)              Inbound (Option C, optional)
+
+   LLM dispatcher                      kakaocli sync --follow --exclude-self
+        │                                       │
+        ↓ HTTP / argv (no shell)                ↓ NDJSON / webhook
+   kakaocli                            Gatekeeper (~150 LOC, optional)
+   ├─ HTTP backend (8080)                       │  · prefix filter
+   │   POST /reply (verifier-gated)             │  · rate limit + dedup
+   │   GET /chats, /chat/<id>                   │  · HMAC sign
+   │   GET /health                              ↓
+   └─ CLI (chatId-first)                LLM dispatcher
+        │  · send / messages / harvest          │  ← loads SKILL.md
+        │  · policy add/list/manage             │  ↓
+        │  · policy verify-command              │  kakaocli policy verify-command
+        ↓                                       │      ↓ exit 0/1/2
+   KakaoTalk.app (AX automation)                │      ↓ branch
+        ↑                                       │  execute tools, send response
+        └───────── response ────────────────────┘  via POST /reply
+```
+
+### Design principles / 설계 원칙
+
+- **chatId is the canonical identifier.** Every command and HTTP endpoint takes a chatId. Operator-curated aliases (`policy.json`) map natural-language labels back to chatIds; name-based substring matching (`--name`, `--chat`, `--open-chat`) is an explicit legacy escape hatch that skips the policy verifier by design.
+  → chatId가 모든 명령·HTTP의 정식 식별자. 자연어 라벨은 `policy.json`의 alias로 해석. 이름 substring은 명시적 legacy 경로 (verifier 미적용).
+
+- **Defense in depth on the send path.** A chatId send passes through (1) `SendPolicyVerifier` — allowlist + `expectedName` + `expectedUserId`, (2) chat-window AX header cross-check after opening, (3) KakaoTalk's own UI. Mismatches at any layer abort the send. HTTP `/reply` has **no per-request bypass** — misconfiguration is a `policy.json` edit, not a flag.
+  → 송신 경로는 SendPolicyVerifier → AX 헤더 cross-check → UI 입력의 다층 검증. HTTP는 우회 불가.
+
+- **Operator-curated, never LLM-derived.** Aliases, primary chat, and the inbound command ACL all live in `policy.json` and are written by the operator (via `kakaocli init` or `kakaocli policy add`). The LLM never extends these from agent code — on a miss it surfaces the gap to the operator and asks them to register.
+  → alias / 본계정 chat / 명령 ACL은 모두 운영자 큐레이션. LLM 자동 추가 금지.
+
+- **HTTP-preferred for unattended sessions.** Webhook-triggered and scheduled agents call the HTTP backend (`127.0.0.1:8080`) instead of subprocess-wrapping `kakaocli` in shell pipelines — host safety classifiers can flag those as dangerous commands and block in approval gates that never resolve in a webhook context. When subprocess is the only path (operations without HTTP yet), call with argv arrays, never shell strings. Detailed routing in [skills/kakaocli/SKILL.md](skills/kakaocli/SKILL.md).
+  → webhook / 무인 세션은 HTTP 백엔드가 fast-path. subprocess는 fallback (argv 배열, 셸 파이프라인 금지).
+
+- **Multi-source robustness.** Process detection cascades through `NSRunningApplication` (in-process Cocoa) → `pgrep` (kernel process table, session-independent). A single API misbehaving — like the LaunchAgent Aqua-pin session-isolation case — degrades cleanly instead of mis-classifying the app as `notRunning`.
+  → 프로세스 탐지는 NSRunningApp + pgrep 다중 소스 cascade. 단일 API 함정 회피.
+
+- **Self-check first.** `kakaocli doctor` reports 13 environment prerequisites as `[ok]` / `[warn]` / `[fail]` — userId source, permissions, LaunchAgent Aqua pin, database decryption, Keychain credentials, app state. Run it after macOS / KakaoTalk updates instead of bisecting failure modes by hand.
+  → 환경 회귀는 `kakaocli doctor`로 30초 자가진단.
+
+For the full agent-integration patterns — LLM dispatcher contract, `sync → verify-command → execute` pipeline, Hermes-style webhook configuration — see [skills/kakaocli/SKILL.md](skills/kakaocli/SKILL.md) and [AGENTS.md](AGENTS.md).
+
+LLM 통합 패턴 자세한 것은 [SKILL.md](skills/kakaocli/SKILL.md)와 [AGENTS.md](AGENTS.md) 참조.
 
 ## AI Integration / AI 연동
 

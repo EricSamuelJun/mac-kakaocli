@@ -1,5 +1,11 @@
 # Changelog
 
+### v0.12.3 - README architecture & integration model
+- README gains a top-level "Architecture & Integration Model / 아키텍처와 통합 모델" section between Configuration and AI Integration. Pins down the three-tier deployment model (kakaocli primitives → optional gatekeeper → LLM dispatcher) with an ASCII diagram covering both outbound (HTTP / argv → AX) and inbound (`sync` → gatekeeper → dispatcher → `verify-command` → response) paths.
+- Six design principles documented inline so a new operator / contributor sees the direction in one screen: chatId is canonical, defense in depth on send (verifier + AX header cross-check + UI), operator-curated never LLM-derived (aliases / ACL), HTTP-preferred for unattended sessions, multi-source process detection robustness, `kakaocli doctor` as the first-line regression triage. Each principle cross-links to SKILL.md / AGENTS.md for the operational detail.
+- Overview bullets at the top refreshed to surface the three-tier model, the doctor command, the chatId-first defense in depth, and the `--exclude-self` loop-prevention flag — so the README's first screen matches the architecture the project actually shipped.
+- CLI version bump v0.12.2 → v0.12.3. No code change; this is the README half of the docs polish that completes the v0.12 cycle (v0.12.1 = sync LaunchAgent + docs, v0.12.2 = SKILL.md fast-path, v0.12.3 = README architecture pin).
+
 ### v0.12.2 - SKILL.md fast-path guidance (Hermes dangerous-command gate)
 - SKILL.md gets a new "Execution method preference" section near the top, marked `★ READ THIS FIRST IN WEBHOOK CONTEXTS`. It pins **HTTP backend as the fast-path** for any operation that has one, with the operation-by-operation table the operator can read at a glance. The rationale is the observed ~6× slowdown when an LLM in a webhook session wraps `kakaocli` in a bash pipeline (`curl | jq | python3 - <<EOF`) and the host's safety classifier parks the call behind a human approval gate that never resolves.
 - The same section ships the ✅/❌ pattern: pass argv as an array (`subprocess.run(["kakaocli", ...])`) when subprocess is the only path; do not wrap in shell pipelines just to extract a field. The CLI already exposes `--json` and direct exit codes for everything that matters.

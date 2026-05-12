@@ -5,7 +5,7 @@ struct KakaoCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "kakaocli",
         abstract: "KakaoTalk CLI for AI agents",
-        version: "0.12.2",
+        version: "0.12.3",
         subcommands: [
             AuthCommand.self,
             ChatsCommand.self,
