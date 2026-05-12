@@ -14,6 +14,7 @@ struct KakaoCLI: ParsableCommand {
             InspectCommand.self,
             LoginCommand.self,
             MessagesCommand.self,
+            PolicyCommand.self,
             QueryCommand.self,
             SchemaCommand.self,
             SearchCommand.self,
