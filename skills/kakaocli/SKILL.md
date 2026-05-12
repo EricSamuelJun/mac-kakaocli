@@ -1,6 +1,6 @@
 ---
 name: kakaocli
-description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server
+description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server. Resolves operator-curated aliases ("49기방", "유희왕 방", ...) to chatIds via `kakaocli policy list --json`, so agents never need to handle raw chat names.
 version: 0.9.0
 requires:
   binaries:
@@ -11,11 +11,14 @@ tags:
   - kakaotalk
   - korea
   - http
+  - alias-resolution
 ---
 
 # KakaoTalk CLI Skill
 
 Read and send KakaoTalk messages from the command line. Requires macOS with KakaoTalk desktop app installed. Auto-launches and auto-logs in when credentials are stored.
+
+> **Address chats by chatId, not by name.** Operator-curated aliases in `~/.kakaocli/policy.json` map human labels (e.g. "49기방") to chatIds — call `kakaocli policy list --json` once and walk the `entries[].alias` field to resolve any label the user types. Aliases are stable, unique, and not LLM-derived. See [Resolving Natural-Language Labels](#resolving-natural-language-labels-hermes--llm-agents) for the full flow.
 
 ## Setup (Required First Time)
 
