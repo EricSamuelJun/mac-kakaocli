@@ -1,5 +1,12 @@
 # Changelog
 
+### v0.9.0 - Aqua session pin, env var removal, agent-facing docs
+- **BREAKING**: `kakaocli send --main` no longer falls back to the `KAKAOCLI_MAIN_CHAT_NAME` env var. `policy.primaryChatId` (set via `kakaocli init` or `kakaocli policy manage <id> --make-primary`) is now the only source. The deprecation warning has been on stderr since v0.6.0.
+- LaunchAgent plist template pins to the Aqua session via `LimitLoadToSessionType=Aqua`. Without this, `launchctl bootstrap gui/<uid>` could still land the agent in a session where `NSRunningApplication.runningApplications(...)` returned an empty array for KakaoTalk, causing every `/reply` to time out with `"did not become ready within timeout"`. Operators upgrading from a hand-written plist need to add the two lines and re-bootstrap.
+- README "Serve" + AGENTS "Running Unattended" call out the Aqua requirement explicitly so migrating operators don't re-derive the failure mode.
+- SKILL.md gains a "Resolving Natural-Language Labels" section: operator prompts like "49기방에 …" arrive without chatIds, and the agent's job is to resolve via `kakaocli policy list --json` → `{alias: chat_id}` map before driving any send / messages / sync call. Aliases stay operator-curated (never LLM-derived).
+- Audit: `chats / messages / search / query` JSON outputs all surface chatId in the documented field (`id` or `chat_id`). No code change — confirmation only.
+
 ### v0.8.0 - `kakaocli policy` subcommand group + aliases
 - New `kakaocli policy` subcommand group: `list`, `add`, `manage`.
 - `PolicyEntry.alias`: optional human-friendly label (e.g. "49기방") that orchestrators resolve to a chatId. Optional + backward-compatible — pre-existing `policy.json` files continue to decode unchanged.

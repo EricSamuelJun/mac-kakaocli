@@ -1,7 +1,7 @@
 ---
 name: kakaocli
 description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server
-version: 0.8.0
+version: 0.9.0
 requires:
   binaries:
     - kakaocli
