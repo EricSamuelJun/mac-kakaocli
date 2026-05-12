@@ -44,10 +44,6 @@
         <key>KAKAOCLI_USER_ID</key>
         <string>__REPLACE_WITH_YOUR_USER_ID__</string>
 
-        <!-- Optional: chat name used by `kakaocli send --main`. -->
-        <key>KAKAOCLI_MAIN_CHAT_NAME</key>
-        <string>__REPLACE_WITH_YOUR_MAIN_CHAT_NAME__</string>
-
         <!-- 0.0.0.0 exposes the server on the Tailscale interface as well.
              Use 127.0.0.1 for localhost-only. -->
         <key>KAKAOCLI_SERVE_HOST</key>

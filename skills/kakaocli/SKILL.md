@@ -54,7 +54,7 @@ kakaocli send --name "Mom" "Hello"                          # legacy substring â
 kakaocli send 313526436723168 "msg" --unsafe-no-verify     # explicit bypass
 ```
 
-`--main` resolves to `policy.primaryChatId` (set during `kakaocli init`). Falls back to `KAKAOCLI_MAIN_CHAT_NAME` env var with a deprecation warning.
+`--main` resolves to `policy.primaryChatId` (set during `kakaocli init`). The legacy `KAKAOCLI_MAIN_CHAT_NAME` env var fallback was removed in v0.9.0.
 
 ### Send Policy
 

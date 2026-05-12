@@ -169,9 +169,9 @@ kakaocli send --dry-run <chatId> "message"             # preview without sending
 kakaocli send <chatId> "message" --unsafe-no-verify    # explicit bypass on chatId path
 ```
 
-`--main` resolves to `policy.primaryChatId` set during `kakaocli init`. For backward compatibility it falls back to the `KAKAOCLI_MAIN_CHAT_NAME` env var with a deprecation warning on stderr; new operators should rely on `policy.json`.
+`--main` resolves to `policy.primaryChatId` set during `kakaocli init`. The legacy `KAKAOCLI_MAIN_CHAT_NAME` env var fallback was removed in v0.9.0 — operators on older setups should run `kakaocli init` or `kakaocli policy manage <chatId> --make-primary`.
 
-`--main`은 `kakaocli init`에서 설정한 `policy.primaryChatId`를 사용합니다. 미설정 시 기존 `KAKAOCLI_MAIN_CHAT_NAME` env var로 fallback (stderr deprecation 경고). 신규 사용자는 `policy.json` 기준으로 운영하세요.
+`--main`은 `kakaocli init`에서 설정한 `policy.primaryChatId`를 사용합니다. 기존 `KAKAOCLI_MAIN_CHAT_NAME` env var fallback은 v0.9.0에서 제거됨 — 구버전 사용자는 `kakaocli init` 또는 `kakaocli policy manage <chatId> --make-primary`로 마이그레이션.
 
 ### Sync / 동기화
 

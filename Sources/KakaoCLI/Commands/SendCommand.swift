@@ -144,24 +144,17 @@ struct SendCommand: ParsableCommand {
         fatalError("unreachable — validate() ensures one of the flags is set")
     }
 
-    /// Resolve `--main` to a Target. Prefer policy.primaryChatId so the
-    /// verifier protects the path; fall back to the legacy
-    /// `KAKAOCLI_MAIN_CHAT_NAME` env var with a deprecation warning so
-    /// existing cron / scripts don't snap.
+    /// Resolve `--main` to a Target. Reads `policy.primaryChatId` only —
+    /// the `KAKAOCLI_MAIN_CHAT_NAME` env var fallback was removed in v0.9.0
+    /// after the policy file path stabilised. Operators on legacy setups
+    /// should run `kakaocli init` (or `policy manage <id> --make-primary`)
+    /// to migrate.
     private func resolveMainTarget() throws -> Target {
         if let cid = (try? Policy.load())?.primaryChatId {
             return .chatId(cid)
         }
-        if let envName = ProcessInfo.processInfo.environment["KAKAOCLI_MAIN_CHAT_NAME"],
-           !envName.isEmpty {
-            fputs(
-                "deprecation: --main is using KAKAOCLI_MAIN_CHAT_NAME='\(envName)' (no verifier). Run `kakaocli init` to migrate to policy.primaryChatId.\n",
-                stderr
-            )
-            return .name(envName)
-        }
         throw ValidationError(
-            "--main needs policy.primaryChatId (run `kakaocli init`) or KAKAOCLI_MAIN_CHAT_NAME env var."
+            "--main requires policy.primaryChatId. Run `kakaocli init` or `kakaocli policy manage <chatId> --make-primary` to set it."
         )
     }
 

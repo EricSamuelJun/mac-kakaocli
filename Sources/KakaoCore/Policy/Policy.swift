@@ -52,7 +52,8 @@ public struct Policy: Codable, Sendable {
     /// reject obviously off-list targets" if they want.
     public var denyByDefault: Bool
     /// chatId of the operator's primary account 1:1 chat. Resolved by
-    /// `send --main`, replacing the older `KAKAOCLI_MAIN_CHAT_NAME` env var.
+    /// `send --main` — the only source since v0.9.0 dropped the legacy
+    /// `KAKAOCLI_MAIN_CHAT_NAME` env var fallback.
     public var primaryChatId: Int64?
 
     public init(

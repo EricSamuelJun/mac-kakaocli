@@ -145,7 +145,7 @@ kakaocli send 313526436723168 "msg" --unsafe-no-verify   # explicit bypass
 - Rate limit: wait at least 2 seconds between sends
 - The chat window opens, types, sends, then closes automatically
 - `--me` / `--main` / `--name` are mutually exclusive
-- `--main` resolves to `policy.primaryChatId` (set during `kakaocli init`). Falls back to `KAKAOCLI_MAIN_CHAT_NAME` env var with a stderr deprecation warning — agents should rely on `policy.json` going forward.
+- `--main` resolves to `policy.primaryChatId` (set during `kakaocli init`). The legacy `KAKAOCLI_MAIN_CHAT_NAME` env var fallback was removed in v0.9.0 — `policy.primaryChatId` is the only source.
 
 ### Send Policy
 
