@@ -14,6 +14,7 @@ struct PolicyCommand: ParsableCommand {
             PolicyListCommand.self,
             PolicyAddCommand.self,
             PolicyManageCommand.self,
+            PolicyVerifyCommand.self,
         ],
         defaultSubcommand: PolicyListCommand.self
     )
@@ -581,5 +582,99 @@ struct PolicyManageCommand: ParsableCommand {
         if !entry.purpose.isEmpty { print("  purpose:        \(entry.purpose)") }
         if let uid = entry.expectedUserId { print("  expectedUserId: \(uid)") }
         if policy.primaryChatId == entry.chatId { print("  ★ primary") }
+    }
+}
+
+// MARK: - policy verify-command (inbound command gate, Option C)
+
+/// Verify an inbound message against the command policy. Designed to be
+/// called by an orchestrator (Hermes, a sync webhook wrapper, etc.) per
+/// message: feed it `(sender_id, message, permission)` and branch on the
+/// exit code.
+///
+/// Exit codes:
+///   0 — allow      → dispatcher executes the command
+///   1 — deny       → dispatcher logs / surfaces to operator
+///   2 — notACommand → dispatcher silently ignores (regular conversation)
+///
+/// `--json` produces a `{decision, reason?}` object for richer parsing.
+struct PolicyVerifyCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "verify-command",
+        abstract: "Check whether an inbound message authorises a command for a given sender.",
+        discussion: """
+            Reads ~/.kakaocli/policy.json and runs the inbound-command
+            verifier against the supplied message, sender userId, and
+            requested permission.
+
+            Exit codes:
+              0  allow         — dispatcher proceeds
+              1  deny          — dispatcher logs; do not execute
+              2  not a command — dispatcher ignores; regular conversation
+            """
+    )
+
+    @Option(name: .long, help: "KakaoTalk userId of the message sender (NTUser.userId).")
+    var senderId: Int64
+
+    @Option(name: .long, help: "Raw message body as delivered by `kakaocli sync`.")
+    var message: String
+
+    @Option(name: .long, help: "Permission string the requested command would exercise (e.g. `search`, `cron.add`, `send.any`).")
+    var permission: String
+
+    @Flag(name: .long, help: "Emit a JSON `{decision, reason?}` object instead of plain text.")
+    var json = false
+
+    func run() throws {
+        let policy = try Policy.load()
+        let decision = CommandPolicyVerifier.verify(
+            message: message,
+            senderUserId: senderId,
+            requestedPermission: permission,
+            policy: policy
+        )
+
+        if json {
+            try emitJSON(decision)
+        } else {
+            emitText(decision)
+        }
+
+        switch decision {
+        case .allow:        throw ExitCode(0)
+        case .deny:         throw ExitCode(1)
+        case .notACommand:  throw ExitCode(2)
+        }
+    }
+
+    private struct Output: Encodable {
+        let decision: String
+        let reason: String?
+    }
+
+    private func emitJSON(_ decision: CommandPolicyDecision) throws {
+        let out: Output
+        switch decision {
+        case .allow:                out = Output(decision: "allow", reason: nil)
+        case .deny(let reason):     out = Output(decision: "deny", reason: reason)
+        case .notACommand:          out = Output(decision: "not_a_command", reason: nil)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(out)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+
+    private func emitText(_ decision: CommandPolicyDecision) {
+        switch decision {
+        case .allow:
+            print("allow")
+        case .deny(let reason):
+            print("deny: \(reason)")
+        case .notACommand:
+            print("not a command")
+        }
     }
 }

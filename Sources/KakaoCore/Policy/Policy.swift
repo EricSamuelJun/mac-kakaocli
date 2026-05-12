@@ -34,6 +34,27 @@ public struct PolicyEntry: Codable, Sendable {
     }
 }
 
+/// An entry on the inbound-command ACL. Maps a KakaoTalk `userId` (the
+/// canonical sender identifier) to a role name. Roles in turn map to a
+/// permission list via `Policy.rolePermissions`. Curated by the operator —
+/// kakaocli never derives ACL membership from message content.
+public struct CommandAclEntry: Codable, Sendable {
+    public var userId: Int64
+    /// Role name. Must match a key in `Policy.rolePermissions`. By
+    /// convention `system` is full-permission, `general` is read-only,
+    /// but the type itself doesn't enforce that — roles are operator-defined.
+    public var role: String
+    /// Free-form note, e.g. "owner_main_account" or "family". Not consumed
+    /// by the verifier.
+    public var purpose: String
+
+    public init(userId: Int64, role: String, purpose: String) {
+        self.userId = userId
+        self.role = role
+        self.purpose = purpose
+    }
+}
+
 /// The send-policy document persisted at `~/.kakaocli/policy.json`. Written
 /// by `kakaocli init`; consumed (in a later commit) by the send-path verifier
 /// that protects against accidental writes to the wrong chat.
@@ -56,18 +77,43 @@ public struct Policy: Codable, Sendable {
     /// `KAKAOCLI_MAIN_CHAT_NAME` env var fallback.
     public var primaryChatId: Int64?
 
+    // MARK: - Inbound command processing (Option C)
+    // The three fields below are all optional and all nil by default so a
+    // policy.json written before v0.12 decodes unchanged and Option A
+    // operators keep their "inbound commands silently ignored" behaviour.
+
+    /// Prefix that gates a message into command interpretation. A message
+    /// only counts as a command attempt when its trimmed text starts with
+    /// this string (e.g. `!명령`). nil / empty disables command processing
+    /// entirely.
+    public var commandPrefix: String?
+    /// userId → role mapping. Senders not present here are denied all
+    /// commands regardless of `rolePermissions`. Operator-curated.
+    public var commandAcl: [CommandAclEntry]?
+    /// role → permissions list. `"*"` in a role's list means "all
+    /// permissions allowed for this role". Operator-defined permission
+    /// strings; kakaocli treats them opaquely (the dispatcher — typically
+    /// Hermes — assigns meaning).
+    public var rolePermissions: [String: [String]]?
+
     public init(
         version: Int = Policy.currentVersion,
         allowlist: [PolicyEntry] = [],
         strictMode: Bool = false,
         denyByDefault: Bool = true,
-        primaryChatId: Int64? = nil
+        primaryChatId: Int64? = nil,
+        commandPrefix: String? = nil,
+        commandAcl: [CommandAclEntry]? = nil,
+        rolePermissions: [String: [String]]? = nil
     ) {
         self.version = version
         self.allowlist = allowlist
         self.strictMode = strictMode
         self.denyByDefault = denyByDefault
         self.primaryChatId = primaryChatId
+        self.commandPrefix = commandPrefix
+        self.commandAcl = commandAcl
+        self.rolePermissions = rolePermissions
     }
 
     /// `~/.kakaocli/policy.json`

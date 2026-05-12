@@ -1,5 +1,13 @@
 # Changelog
 
+### v0.12.0 - Option C inbound command gate (prefix + tenant ACL)
+- New `Policy.commandPrefix` / `Policy.commandAcl` / `Policy.rolePermissions` fields. All optional and nil by default — pre-v0.12 `policy.json` files decode unchanged and Option A (inbound commands silently ignored) stays the default behaviour. Operators opt into Option C by setting these three fields.
+- `CommandAclEntry` struct: maps a KakaoTalk `userId` to a role name plus a free-form `purpose` note. ACL membership is operator-curated; kakaocli never derives it from message content.
+- New `Sources/KakaoCore/Policy/CommandPolicyVerifier.swift` exposes a pure `verify(message:senderUserId:requestedPermission:policy:) -> CommandPolicyDecision` (`.allow / .deny(reason) / .notACommand`). Matrix: nil policy → deny, missing/empty prefix → notACommand (so unconfigured installs don't spam deny logs for regular chat), message without prefix → notACommand, sender absent from ACL → deny, role absent from `rolePermissions` → deny, `"*"` in role's permissions → allow any, otherwise exact-match the requested permission. Leading whitespace before the prefix is trimmed.
+- New CLI `kakaocli policy verify-command --sender-id N --message "..." --permission P [--json]`. Exit codes are the dispatcher signal: `0` allow, `1` deny (logs `deny: <reason>`), `2` not a command (silent ignore). `--json` emits `{decision, reason?}` for richer parsing.
+- `kakaocli sync --exclude-self`: drops messages where `is_from_me == true` before they reach stdout / the webhook. Prevents Hermes-style dispatchers from receiving their own replies as fresh inbound commands and looping. The existing `is_from_me` field is unchanged; the new flag is just an opt-in server-side filter.
+- Tests cover the verifier decision matrix end-to-end (9 cases: nil policy, no/empty prefix, no-prefix message, ACL miss, role miss, wildcard, specific-permission match/miss, leading whitespace) plus a backward-compat decode of a pre-v0.12 `policy.json`.
+
 ### v0.11.0 - AppLifecycle multi-source cascade
 - `AppLifecycle.detectState` and `isRunning` no longer depend on `NSRunningApplication` alone. New `AppLifecycle.findProcess()` cascades through `NSRunningApplication` (in-process Cocoa) → `pgrep -x KakaoTalk` (kernel process table, session-independent). Any positive signal wins; only an all-negative result concludes "not running".
 - New public types `AppLifecycle.RunningProcess` (`{pid, source}`) and `DetectionSource` (`.nsRunningApp` / `.pgrep`) so callers can distinguish the cross-session case from the normal one.

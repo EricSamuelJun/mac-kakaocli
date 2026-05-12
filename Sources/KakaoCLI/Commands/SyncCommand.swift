@@ -20,6 +20,9 @@ struct SyncCommand: ParsableCommand {
     @Option(name: .long, help: "Start from this logId (default: latest)")
     var sinceLogId: Int64?
 
+    @Flag(name: .long, help: "Skip messages sent by the operator's own account (prevents Hermes-style command loops).")
+    var excludeSelf = false
+
     @Option(name: .long, help: "Path to database file")
     var db: String?
 
@@ -65,9 +68,16 @@ struct SyncCommand: ParsableCommand {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
+        let excludeSelf = self.excludeSelf
         watcher.watch(
             onMessages: { messages in
-                for msg in messages {
+                // `is_from_me` is already computed per-row by DatabaseReader
+                // (sender_id == myUserId). With --exclude-self the operator's
+                // own outbound messages are dropped before they reach stdout
+                // or the webhook — this is how Hermes-style dispatchers avoid
+                // their own replies bouncing back as inbound commands.
+                let toEmit = excludeSelf ? messages.filter { !$0.isFromMe } : messages
+                for msg in toEmit {
                     // NDJSON: one JSON object per line
                     if let data = try? encoder.encode(msg),
                        let line = String(data: data, encoding: .utf8) {
@@ -77,7 +87,7 @@ struct SyncCommand: ParsableCommand {
                 }
                 // Also publish to webhook if configured
                 if let publisher = webhookPublisher {
-                    if !publisher.publish(messages) {
+                    if !publisher.publish(toEmit) {
                         fputs("Warning: webhook delivery failed\n", stderr)
                     }
                 }
