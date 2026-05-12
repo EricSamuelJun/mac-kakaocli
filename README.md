@@ -141,6 +141,7 @@ kakaocli query "SELECT COUNT(*) FROM NTChatMessage"
 | Command | Description |
 |---------|-------------|
 | `kakaocli init` | First-time setup: permissions, userId recovery, scaffold `~/.kakaocli/{config,policy}.json` |
+| `kakaocli doctor` | Self-check 13 prerequisites (identity, app, permissions, DB, LaunchAgent, credentials) as `[ok]`/`[warn]`/`[fail]`. `--json` for machine-readable output |
 | `kakaocli status` | Check KakaoTalk installation and permissions |
 | `kakaocli auth` | Verify the operator config decrypts the database (`(config)`/`(env)`/`(override)`/`(plist)` source label) |
 | `kakaocli chats` | List chats sorted by last activity |

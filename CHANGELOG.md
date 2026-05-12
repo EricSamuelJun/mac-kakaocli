@@ -1,5 +1,11 @@
 # Changelog
 
+### v0.10.0 - `kakaocli doctor` self-check
+- New `kakaocli doctor` command: runs 13 read-only checks against the operator environment and reports each as `[ok]` / `[warn]` / `[fail]`. Covers identity (userId source, `config.json`, `policy.json`), KakaoTalk app (installed, running, app state), macOS permissions (Accessibility, Full Disk Access), database (found, decryption), and operations (LaunchAgent plist + Aqua pin, bootstrapped, Keychain credentials).
+- `--json` flag for machine-readable output (snake_case keys + summary block), suitable for orchestrator health checks. Exit code `0` unless any check fails; warnings stay informational.
+- Doctor never mutates state — no AX dialogs triggered, no files written, `detectState` runs non-aggressively. Safe to wire into cron / monitors / Hermes pre-flight.
+- Closes plan §2 (the remaining short-term item from `quiet-singing-hartmanis.md`); regression triage on macOS / KakaoTalk updates should now take ~30 seconds instead of bisecting the failure mode by hand.
+
 ### v0.9.0 - Aqua session pin, env var removal, agent-facing docs
 - **BREAKING**: `kakaocli send --main` no longer falls back to the `KAKAOCLI_MAIN_CHAT_NAME` env var. `policy.primaryChatId` (set via `kakaocli init` or `kakaocli policy manage <id> --make-primary`) is now the only source. The deprecation warning has been on stderr since v0.6.0.
 - LaunchAgent plist template pins to the Aqua session via `LimitLoadToSessionType=Aqua`. Without this, `launchctl bootstrap gui/<uid>` could still land the agent in a session where `NSRunningApplication.runningApplications(...)` returned an empty array for KakaoTalk, causing every `/reply` to time out with `"did not become ready within timeout"`. Operators upgrading from a hand-written plist need to add the two lines and re-bootstrap.
