@@ -93,7 +93,7 @@ kakaocli schema --format markdown -o docs/SCHEMA.md
 ### Manage the Send-Policy Allowlist
 ```bash
 # Resolve a human alias (e.g. "49기방") to its chatId
-kakaocli policy list --json | jq '.entries[] | select(.alias=="49기방") | .chat_id'
+kakaocli policy list --json | jq -r '.entries[] | select(.alias=="49기방") | .chat_id'
 
 # Add a chat to the allowlist (non-interactive)
 kakaocli policy add --chat-id <chatId> --alias "<label>" --purpose "<note>"
@@ -105,6 +105,47 @@ kakaocli policy manage <chatId> --make-primary --yes
 kakaocli policy manage <chatId> --remove --yes
 ```
 Aliases must be unique across the allowlist; collisions return a non-zero exit. `--yes` skips the [y/N] confirmation that `--make-primary` and `--remove` ask for interactively.
+
+### Resolving Natural-Language Labels (Hermes / LLM agents)
+
+Operator prompts arrive with human labels, not chatIds:
+
+> "49기방에 매일 1시간마다 뉴스 정리해서 보내줘"
+> "유희왕 방에 정오 12시 3분마다 'TCG 마이너갤러리' 신규 정보 글 올려줘"
+> "지금 일본선교팀방에 무슨 공지가 떴는지 확인해줘"
+
+The agent's job is to turn each label into a chatId via the policy file. Recommended flow:
+
+```python
+import json, subprocess
+
+# 1. Build alias → chatId map (read-only, fast)
+policy = json.loads(subprocess.run(
+    ["kakaocli", "policy", "list", "--json"],
+    capture_output=True, text=True, check=True,
+).stdout)
+alias_to_chat = {e["alias"]: e["chat_id"] for e in policy["entries"] if e["alias"]}
+
+# 2. Resolve the label the operator used
+label = "49기방"
+chat_id = alias_to_chat.get(label)
+if chat_id is None:
+    # Aliases are operator-curated. If missing, ask the operator to run:
+    #   kakaocli policy add --chat-id <id> --alias "<label>" --purpose "<note>"
+    raise RuntimeError(f"No policy entry has alias '{label}'.")
+
+# 3. Drive any downstream command with the resolved chatId
+subprocess.run(["kakaocli", "send", str(chat_id), "Today's news …"], check=True)
+# or read-back:
+subprocess.run(["kakaocli", "messages", "--chat-id", str(chat_id), "--since", "1h", "--json"], ...)
+```
+
+Operating principles:
+
+- **Aliases are operator-curated, not LLM-derived.** Never auto-create an alias from a parsed label — the operator must `kakaocli policy add` it explicitly. This keeps the policy file authoritative and the verifier honest.
+- **One alias, one chatId.** `policy add` / `policy manage --set-alias` reject collisions, so the reverse mapping stays total.
+- **Aliases work for read paths too.** `kakaocli messages --chat-id <resolved>`, `inspect --open-chat-id <resolved>`, and `sync --follow` all take the chatId; the policy file is the only place that knows the human-readable label.
+- **HTTP path is identical.** `POST /reply` body's `room` is the same chatId string; resolve once and call either `kakaocli send` or the HTTP endpoint with the same value.
 
 ### Watch for New Messages
 ```bash
