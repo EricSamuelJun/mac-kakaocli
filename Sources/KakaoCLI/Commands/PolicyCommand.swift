@@ -12,6 +12,7 @@ struct PolicyCommand: ParsableCommand {
         abstract: "Inspect and edit the send-policy allowlist (~/.kakaocli/policy.json)",
         subcommands: [
             PolicyListCommand.self,
+            PolicyAddCommand.self,
         ],
         defaultSubcommand: PolicyListCommand.self
     )
@@ -105,6 +106,14 @@ struct PolicyListCommand: ParsableCommand {
         FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
+    fileprivate static func humanRelative(_ date: Date) -> String {
+        let s = Int(Date().timeIntervalSince(date))
+        if s < 60 { return "\(s)s ago" }
+        if s < 3600 { return "\(s / 60)m ago" }
+        if s < 86_400 { return "\(s / 3600)h ago" }
+        return "\(s / 86_400)d ago"
+    }
+
     private func emitHuman(_ policy: Policy) {
         print("policy: \(Policy.path)")
         print("  strictMode:    \(policy.strictMode)")
@@ -135,5 +144,165 @@ struct PolicyListCommand: ParsableCommand {
             }
             print("        \(meta.joined(separator: "  "))")
         }
+    }
+}
+
+// MARK: - policy add
+
+/// Add a chat to the allowlist. Interactive by default (operator at a
+/// terminal). Pass `--chat-id` to switch into the unattended path that
+/// Hermes / LLM agents use through the skill manifest.
+struct PolicyAddCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Register a chat with the allowlist so it passes the send-policy verifier."
+    )
+
+    // Non-interactive path. Any of these being set switches off the TUI.
+    @Option(name: .long, help: "chatId to add. Required for non-interactive use.")
+    var chatId: Int64?
+
+    @Option(name: .long, help: "Optional human-friendly alias (e.g. \"49기방\"). Must be unique across the allowlist.")
+    var alias: String?
+
+    @Option(name: .long, help: "Free-form purpose description.")
+    var purpose: String?
+
+    @Flag(name: .long, help: "Don't pin expectedUserId on 1:1 chats (default: pin to the friend's userId).")
+    var noPinUserId = false
+
+    @Option(name: .long, help: "Path to database file")
+    var db: String?
+
+    @Option(name: .long, help: "Database encryption key")
+    var key: String?
+
+    func run() throws {
+        let reader = try openDatabase(dbPath: db, key: key)
+        defer { reader.close() }
+
+        var policy = try Policy.load() ?? Policy()
+
+        if let id = chatId {
+            try addNonInteractive(policy: &policy, reader: reader, chatId: id)
+        } else {
+            try addInteractive(policy: &policy, reader: reader)
+        }
+
+        try policy.save()
+    }
+
+    // MARK: - Non-interactive (agent / script)
+
+    private func addNonInteractive(policy: inout Policy, reader: DatabaseReader, chatId: Int64) throws {
+        if policy.allowlist.contains(where: { $0.chatId == chatId }) {
+            throw ValidationError("chatId \(chatId) is already in the allowlist. Use `kakaocli policy manage \(chatId)` to modify it.")
+        }
+        guard let chat = try reader.chat(byChatId: chatId) else {
+            throw ValidationError("chatId \(chatId) was not found in the KakaoTalk database.")
+        }
+        if let alias, !alias.isEmpty,
+           policy.allowlist.contains(where: { $0.alias == alias }) {
+            throw ValidationError("alias \"\(alias)\" is already used by another entry. Aliases must be unique.")
+        }
+
+        let pinnedUserId: Int64?
+        if noPinUserId || chat.type != .direct {
+            pinnedUserId = nil
+        } else {
+            pinnedUserId = (try? reader.directMemberUserId(forChatId: chatId)) ?? nil
+        }
+
+        let entry = PolicyEntry(
+            chatId: chatId,
+            expectedName: chat.displayName,
+            expectedUserId: pinnedUserId,
+            purpose: purpose ?? "",
+            alias: (alias?.isEmpty == false) ? alias : nil
+        )
+        policy.allowlist.append(entry)
+
+        let aliasNote = entry.alias.map { " alias=\"\($0)\"" } ?? ""
+        let pinNote = entry.expectedUserId.map { " userId=\($0)" } ?? ""
+        print("Added [\(chatId)] \(chat.displayName)\(aliasNote)\(pinNote)")
+    }
+
+    // MARK: - Interactive (operator at a terminal)
+
+    private func addInteractive(policy: inout Policy, reader: DatabaseReader) throws {
+        let existingIds = Set(policy.allowlist.map { $0.chatId })
+        let allChats = try reader.chats(limit: 1000)
+        let candidates = allChats.filter { !existingIds.contains($0.id) }
+
+        if candidates.isEmpty {
+            print("No chats available to add — every chat known to the database is already in the allowlist.")
+            return
+        }
+
+        // Show up to 20 candidates ordered by recency (DatabaseReader already
+        // sorts by lastUpdatedAt DESC). Operators wanting something deeper in
+        // the list pass --chat-id directly.
+        let shown = Array(candidates.prefix(20))
+        print("Candidates not yet on the allowlist (most recent first):")
+        for (i, c) in shown.enumerated() {
+            let ago = c.lastMessageAt.map(PolicyListCommand.humanRelative) ?? "never"
+            print("  [\(i + 1)] [\(c.id)] \(c.displayName)  type=\(c.type.rawValue)  last=\(ago)")
+        }
+        if candidates.count > shown.count {
+            print("  (\(candidates.count - shown.count) more not shown — re-run with `--chat-id <id>` for those)")
+        }
+        let cancelIndex = shown.count + 1
+        print("  [\(cancelIndex)] cancel")
+        print("Select [1-\(cancelIndex)]:", terminator: " ")
+
+        guard let line = readLine(),
+              let n = Int(line.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...cancelIndex).contains(n) else {
+            throw ValidationError("Invalid selection.")
+        }
+        if n == cancelIndex {
+            print("Cancelled. policy.json unchanged.")
+            throw ExitCode(0)
+        }
+        let chosen = shown[n - 1]
+
+        // Alias
+        print("Alias (orchestrator label like \"49기방\"; blank to skip):", terminator: " ")
+        let rawAlias = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let chosenAlias: String?
+        if rawAlias.isEmpty {
+            chosenAlias = nil
+        } else {
+            if policy.allowlist.contains(where: { $0.alias == rawAlias }) {
+                throw ValidationError("alias \"\(rawAlias)\" is already used by another entry. Aliases must be unique.")
+            }
+            chosenAlias = rawAlias
+        }
+
+        // Purpose
+        print("Purpose (free-form note, e.g. \"team_cron\"; blank to skip):", terminator: " ")
+        let rawPurpose = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Pin expectedUserId on 1:1 chats
+        var pinnedUserId: Int64? = nil
+        if chosen.type == .direct,
+           let direct = (try? reader.directMemberUserId(forChatId: chosen.id)) ?? nil {
+            print("Pin expectedUserId=\(direct) so the verifier rejects mismatches? [Y/n]:", terminator: " ")
+            let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            pinnedUserId = (answer.isEmpty || answer == "y" || answer == "yes") ? direct : nil
+        }
+
+        let entry = PolicyEntry(
+            chatId: chosen.id,
+            expectedName: chosen.displayName,
+            expectedUserId: pinnedUserId,
+            purpose: rawPurpose,
+            alias: chosenAlias
+        )
+        policy.allowlist.append(entry)
+
+        let aliasNote = entry.alias.map { " alias=\"\($0)\"" } ?? ""
+        let pinNote = entry.expectedUserId.map { " userId=\($0)" } ?? ""
+        print("Added [\(chosen.id)] \(chosen.displayName)\(aliasNote)\(pinNote)")
     }
 }
