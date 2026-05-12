@@ -248,6 +248,11 @@ The first `/reply` after a fresh install may trigger Accessibility / Full Disk A
 
 신규 설치 후 첫 `/reply` 호출 시 접근성/전체 디스크 접근 프롬프트가 뜰 수 있습니다 — Chrome Remote Desktop 등 GUI 세션에서 승인하세요. 한 번 승인 후 영구 유지됩니다.
 
+> [!IMPORTANT]
+> The shipped template includes `<key>LimitLoadToSessionType</key><string>Aqua</string>`. Without it, even `launchctl bootstrap gui/<uid>` can put the LaunchAgent in a session where `NSRunningApplication.runningApplications(withBundleIdentifier:)` returns an empty array for KakaoTalk. The agent then mis-detects the app as `notRunning` and every `/reply` times out with `KakaoTalk launched but did not become ready within timeout`. If you're upgrading from a plist written before 2026-05-12, add the two lines manually and `bootout` → `bootstrap`.
+>
+> 템플릿엔 `LimitLoadToSessionType=Aqua` 가 포함되어 있습니다. 빠지면 `launchctl bootstrap gui/<uid>`로 띄워도 LaunchAgent가 GUI 세션 밖에 떠서 `NSRunningApplication.runningApplications(...)`가 카카오톡 process를 못 봅니다 — 모든 `/reply`가 "did not become ready within timeout"으로 실패합니다. 2026-05-12 이전 plist는 두 줄 수동 추가 후 `bootout`/`bootstrap` 재시작.
+
 ### Harvest / 수집
 
 ```bash

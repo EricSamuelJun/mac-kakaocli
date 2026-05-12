@@ -310,6 +310,8 @@ launchctl list | grep kakaocli                              # PID + exit code
 
 First call after install may surface Accessibility / Full Disk Access prompts — approve them via Chrome Remote Desktop or another GUI session. Persistent thereafter.
 
+**`LimitLoadToSessionType = Aqua` is mandatory in the plist.** The shipped template includes it. Without it, `launchctl bootstrap gui/<uid>` can still land the agent in a session where `NSRunningApplication.runningApplications(...)` returns an empty array for KakaoTalk, and the agent then concludes the app is `notRunning` and every `/reply` times out with `"did not become ready within timeout"`. If you wrote the plist by hand before 2026-05-12, add `<key>LimitLoadToSessionType</key><string>Aqua</string>` and re-bootstrap.
+
 ### Concurrency / Ordering
 
 Requests are dispatched to a single serial work queue so KakaoTalk's UI is never driven by two requests at once. Burst senders should expect serialized processing (~2-3s per message including AX wait).
