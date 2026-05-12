@@ -36,6 +36,9 @@ struct HarvestCommand: ParsableCommand {
     @Option(name: .long, help: "Delay between actions in seconds (default: 1.5)")
     var scrollDelay: Double = 1.5
 
+    @Flag(name: .long, help: "Process unread chats too (debug). Default skips them so opening doesn't mark them read in KakaoTalk.")
+    var includeUnread = false
+
     @Flag(name: .long, help: "Show what would be done without doing it")
     var dryRun = false
 
@@ -87,7 +90,14 @@ struct HarvestCommand: ParsableCommand {
             for (i, chat) in chats.enumerated() {
                 let existing = metadata.name(for: chat.id)
                 let nameInfo = existing.map { " (metadata: \($0))" } ?? ""
-                let unread = chat.unreadCount > 0 ? " [SKIP: \(chat.unreadCount) unread]" : ""
+                let unread: String
+                if chat.unreadCount > 0 {
+                    unread = includeUnread
+                        ? " [\(chat.unreadCount) unread; will process]"
+                        : " [SKIP: \(chat.unreadCount) unread]"
+                } else {
+                    unread = ""
+                }
                 fputs("  [\(i+1)] \(chat.displayName) [chatId=\(chat.id)]\(nameInfo)\(unread)\n", stderr)
             }
             fputs("\nMetadata store: \(metadata.count) entries at ~/.kakaocli/metadata.json\n", stderr)
@@ -99,6 +109,7 @@ struct HarvestCommand: ParsableCommand {
             maxChats: top,
             maxPreviousClicks: maxClicks,
             namesOnly: !scroll,
+            skipUnread: !includeUnread,
             scrollDelay: scrollDelay
         )
 
