@@ -1,5 +1,12 @@
 # Changelog
 
+### v0.12.1 - Option C wiring (LaunchAgent template + docs)
+- New `deploy/launchd/com.kakaocli.sync.plist.template` runs `kakaocli sync --follow --exclude-self --webhook <url>` in the Aqua session. Sits alongside `com.kakaocli.serve.plist.template`; together they cover outbound (HTTP `/reply`) and inbound (NDJSON / webhook) for unattended operation.
+- README "Configuration" gains an "Inbound commands (Option C, opt-in)" subsection covering the three new policy fields, the `verify-command` exit-code contract, and a pointer to SKILL.md for the dispatcher pattern.
+- AGENTS "Sync Mode" documents `--exclude-self`. A new "Inbound Command Processing (Option C)" section walks through the end-to-end pipeline (sync → LLM intent → verify-command → branch → send), shows the dispatcher's Python sketch, and lists operator caveats (aliases vs commandAcl, kakaocli-is-not-the-dispatcher trust boundary, ACL is operator-curated only).
+- SKILL.md adds the matching "Inbound Command Processing (Option C)" section so LLM-driven dispatchers have the contract in hand without leaving the skill manifest. Troubleshooting table gains two rows: malformed `policy.json` after a manual edit, and the reply-loop symptom when `--exclude-self` is forgotten.
+- No Swift code changes; this is the docs / config / LaunchAgent half of the Option C ship that v0.12.0 left for a follow-up.
+
 ### v0.12.0 - Option C inbound command gate (prefix + tenant ACL)
 - New `Policy.commandPrefix` / `Policy.commandAcl` / `Policy.rolePermissions` fields. All optional and nil by default — pre-v0.12 `policy.json` files decode unchanged and Option A (inbound commands silently ignored) stays the default behaviour. Operators opt into Option C by setting these three fields.
 - `CommandAclEntry` struct: maps a KakaoTalk `userId` to a role name plus a free-form `purpose` note. ACL membership is operator-curated; kakaocli never derives it from message content.

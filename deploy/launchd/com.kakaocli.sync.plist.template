@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for `kakaocli sync` — feeds inbound KakaoTalk
+  messages to an external dispatcher (Hermes / Spring Boot / custom
+  webhook). Used to wire the Option C inbound-command gate:
+
+      sync (this agent) → POST → dispatcher → kakaocli policy verify-command
+                                            → branch on exit code
+                                            → kakaocli send <chatId> (response)
+
+  The agent is read-only (it never touches the UI). It runs alongside the
+  `kakaocli serve` agent — `serve` handles outbound (HTTP /reply), `sync`
+  handles inbound (NDJSON / webhook).
+
+  Replace every `__REPLACE_*__` placeholder below with your own values,
+  then install via:
+
+      cp deploy/launchd/com.kakaocli.sync.plist.template \
+         ~/Library/LaunchAgents/com.kakaocli.sync.plist
+      # edit ~/Library/LaunchAgents/com.kakaocli.sync.plist
+      plutil ~/Library/LaunchAgents/com.kakaocli.sync.plist
+      launchctl bootstrap gui/$(id -u) \
+         ~/Library/LaunchAgents/com.kakaocli.sync.plist
+
+  Unload with:
+      launchctl bootout gui/$(id -u) \
+         ~/Library/LaunchAgents/com.kakaocli.sync.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kakaocli.sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/kakaocli</string>
+        <string>sync</string>
+        <string>--follow</string>
+
+        <!-- Skip messages this bot account itself sent so Hermes' own
+             replies don't loop back as fresh inbound commands. -->
+        <string>--exclude-self</string>
+
+        <string>--webhook</string>
+        <!-- Dispatcher endpoint. POST receives JSON arrays of new messages.
+             Example for Hermes' webhook listener:
+             http://127.0.0.1:7000/kakao -->
+        <string>__REPLACE_WEBHOOK_URL__</string>
+
+        <!-- Optional: tune the poll interval. 2s default is fine for most
+             cases; raise to 5s to ease DB load if Mac mini is busy. -->
+        <!--
+        <string>- -interval</string>
+        <string>2</string>
+        -->
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- KakaoTalk userId for DB decryption (see handoff §2.3 / §2.4). -->
+        <key>KAKAOCLI_USER_ID</key>
+        <string>__REPLACE_WITH_YOUR_USER_ID__</string>
+
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!--
+      Aqua session pin. Sync itself only reads the database (no AX), so
+      it doesn't strictly need WindowServer access — but pinning to Aqua
+      ties the agent's lifecycle to GUI login, which is what the operator
+      usually wants (start when logged in, stop on logout) and keeps the
+      behaviour symmetric with `com.kakaocli.serve.plist`.
+    -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if the process crashes. Sync is long-running by design
+         (--follow) so a crash is the only way it exits short of bootout. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/__REPLACE_USERNAME__/.kakaocli/sync.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/__REPLACE_USERNAME__/.kakaocli/sync.stderr.log</string>
+</dict>
+</plist>

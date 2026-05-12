@@ -337,12 +337,119 @@ POSTs batches of new messages as JSON arrays to the webhook URL.
 - `--interval <seconds>` — Poll frequency (default: 2s)
 - `--since-log-id <id>` — Start from a specific point instead of latest
 - `--webhook <url>` — POST new messages to this URL
+- `--exclude-self` — Drop messages where `is_from_me == true` before stdout/webhook delivery. Mandatory for the [inbound-command flow](#inbound-command-processing-option-c) — without it, the dispatcher's own replies arrive back as fresh inbound messages and loop.
 
 ### One-Shot Status
 ```bash
 kakaocli sync
 ```
 Returns: `{"status":"ready","max_log_id":12345}` — useful for getting the current high-water mark.
+
+## Inbound Command Processing (Option C)
+
+By default kakaocli treats inbound KakaoTalk messages as conversation — sync delivers them, nothing interprets them as commands. Operators who want KakaoTalk to also be a **command channel** opt in by adding three fields to `~/.kakaocli/policy.json`:
+
+```json
+{
+  "commandPrefix": "!명령",
+  "commandAcl": [
+    { "userId": 68062272, "role": "system",  "purpose": "owner" },
+    { "userId": 11111111, "role": "general", "purpose": "family" }
+  ],
+  "rolePermissions": {
+    "system":  ["*"],
+    "general": ["search", "messages.read"]
+  }
+}
+```
+
+- `commandPrefix` — trim-prefix gate. Only messages starting with this string are command attempts.
+- `commandAcl` — operator-curated `userId → role` mapping. Senders not on the list are denied regardless of message content.
+- `rolePermissions` — `role → [permission strings]`. `"*"` in a role's list grants any permission. Permission names are operator-defined; kakaocli treats them opaquely.
+
+### Dispatcher Contract
+
+```bash
+kakaocli policy verify-command \
+  --sender-id <senderUserId> \
+  --message "<raw text>" \
+  --permission "<derived permission>"
+```
+
+Exit codes — the dispatcher's branching signal:
+
+| Exit | Decision | Action |
+|------|----------|--------|
+| `0` | allow | Execute the command. Send response via `kakaocli send <chat_id> "<response>"`. |
+| `1` | deny | Log it (the CLI already prints `deny: <reason>`). Do not execute. |
+| `2` | not a command | Silently ignore. Regular conversation, leave it alone. |
+
+`--json` returns `{"decision": "allow|deny|not_a_command", "reason": "..."}` for richer parsing.
+
+### End-to-End Pipeline
+
+```
+KakaoTalk inbound message
+   ↓ (NTChatMessage row)
+kakaocli sync --follow --exclude-self
+   ↓ (NDJSON, one message per line; webhook or stdout)
+Dispatcher (Hermes / custom)
+   ↓ LLM extracts intent → permission string
+kakaocli policy verify-command --sender-id N --message ... --permission P
+   ↓ exit code
+[0] execute → kakaocli send <chat_id> "<response>"
+[1] log deny
+[2] ignore
+```
+
+Python sketch:
+
+```python
+import json, subprocess, sys
+
+# stdin is the NDJSON pipe from `kakaocli sync --follow --exclude-self`
+for line in sys.stdin:
+    msg = json.loads(line)
+    intent = llm.classify(msg["text"])  # → {"permission": "search", ...} | None
+    if intent is None:
+        continue
+
+    res = subprocess.run([
+        "kakaocli", "policy", "verify-command",
+        "--sender-id",  str(msg["sender_id"]),
+        "--message",    msg["text"],
+        "--permission", intent["permission"],
+    ], capture_output=True, text=True)
+
+    if res.returncode == 0:
+        response = handle(intent)
+        subprocess.run(["kakaocli", "send", str(msg["chat_id"]), response], check=True)
+    elif res.returncode == 1:
+        log.warning("denied: %s", res.stdout.strip())
+    # exit 2 — silent ignore
+```
+
+### Running Unattended (LaunchAgent)
+
+A second LaunchAgent template runs the sync subscription in the Aqua session:
+
+```bash
+cp deploy/launchd/com.kakaocli.sync.plist.template \
+   ~/Library/LaunchAgents/com.kakaocli.sync.plist
+$EDITOR ~/Library/LaunchAgents/com.kakaocli.sync.plist     # fill __REPLACE_*__
+plutil ~/Library/LaunchAgents/com.kakaocli.sync.plist
+launchctl bootstrap gui/$(id -u) \
+   ~/Library/LaunchAgents/com.kakaocli.sync.plist
+launchctl list | grep kakaocli                              # both serve + sync should appear
+```
+
+The shipped template runs `kakaocli sync --follow --exclude-self --webhook <url>` with `LimitLoadToSessionType=Aqua`. Fill in the webhook URL with your dispatcher's listener (e.g. `http://127.0.0.1:7000/kakao`).
+
+### Operator Caveats
+
+- **Aliases live separately from the command ACL.** `PolicyEntry.alias` is for resolving "send to 49기방" → chatId on outbound; `commandAcl` is for "allow this userId to issue commands" on inbound. Different domains, same JSON file.
+- **kakaocli is not the dispatcher.** It provides the verifier and the sync stream; the LLM, intent extraction, and command execution all live in the dispatcher. The trust boundary is the exit code.
+- **`commandAcl` membership is operator-curated.** Agents must not add senders to the ACL from code — that would defeat the entire boundary. On a deny, surface the line to the operator and ask them to update policy via `policy.json`.
 
 ## Agent Integration Pattern
 

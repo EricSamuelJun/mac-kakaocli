@@ -149,6 +149,106 @@ kakaocli policy manage <chatId> --remove --yes
 # Both --make-primary and --remove ask for [y/N] interactively unless --yes is passed.
 ```
 
+## Inbound Command Processing (Option C)
+
+By default kakaocli treats inbound KakaoTalk messages as output-channel
+echoes — sync delivers them, nothing interprets them. The operator can
+opt in to treating prefixed messages as commands by setting three fields
+in `~/.kakaocli/policy.json`:
+
+```json
+{
+  "commandPrefix": "!명령",
+  "commandAcl": [
+    { "userId": 68062272, "role": "system",  "purpose": "owner" },
+    { "userId": 11111111, "role": "general", "purpose": "family" }
+  ],
+  "rolePermissions": {
+    "system":  ["*"],
+    "general": ["search", "messages.read"]
+  }
+}
+```
+
+Once those fields exist, the dispatcher contract (Hermes / LLM agent) is
+strictly four steps:
+
+```
+1. Subscribe to `kakaocli sync --follow --exclude-self`
+   (the LaunchAgent at `deploy/launchd/com.kakaocli.sync.plist.template`
+    handles this when --webhook points at the dispatcher's listener).
+
+2. For each NDJSON message: extract command intent via the LLM, which
+   yields the operator-defined permission string the action needs
+   (e.g. "search", "cron.add", "send.any"). If no intent → silent ignore.
+
+3. Call:
+     kakaocli policy verify-command \
+       --sender-id <message.sender_id> \
+       --message  "<message.text>" \
+       --permission "<derived_permission>"
+
+4. Branch on exit code:
+     0 → ALLOW. Execute the command. Send the response back via
+         `kakaocli send <message.chat_id> "<response>"`.
+     1 → DENY.  Log the line (kakaocli already wrote "deny: <reason>"
+         to stdout). Do NOT execute. Do NOT echo to the user — that's
+         a separate operator decision.
+     2 → NOT A COMMAND. Silently ignore. This is the dispatcher
+         signal for "regular conversation, leave it alone."
+```
+
+Python sketch — the shape Hermes wraps around kakaocli:
+
+```python
+import json, subprocess
+
+# stdin is the NDJSON pipe from `kakaocli sync --follow --exclude-self`
+for line in sys.stdin:
+    msg = json.loads(line)
+    intent = llm.classify(msg["text"])   # → {"permission": "search", "query": "…"} | None
+    if intent is None:
+        continue
+
+    res = subprocess.run([
+        "kakaocli", "policy", "verify-command",
+        "--sender-id", str(msg["sender_id"]),
+        "--message",   msg["text"],
+        "--permission", intent["permission"],
+    ], capture_output=True, text=True)
+
+    if res.returncode == 0:
+        response = handle(intent)
+        subprocess.run(
+            ["kakaocli", "send", str(msg["chat_id"]), response],
+            check=True,
+        )
+    elif res.returncode == 1:
+        logger.warning("denied command from %s: %s",
+                       msg["sender_id"], res.stdout.strip())
+    # exit 2 → not a command, silent
+```
+
+**DO** in the dispatcher:
+- Always pass `--exclude-self` when subscribing to sync. Without it,
+  every reply the bot sends arrives back as a fresh inbound message
+  and the LLM loops.
+- Use the permission strings the operator defined in `rolePermissions`.
+  The namespace is operator-owned; kakaocli treats them opaquely
+  (string match, plus `"*"` wildcard).
+- Honour exit code 2 as silent — don't surface "not a command" to the
+  user. That's the gate working correctly.
+
+**DON'T**:
+- Don't try to bypass the prefix gate by sniffing intent in non-prefix
+  messages. The prefix is the operator's only way to opt-in; treating
+  bare conversation as commands defeats the whole boundary.
+- Don't add senders to `commandAcl` from agent code. The ACL is
+  operator-curated. On a miss, log it and surface to the operator.
+- Don't call `verify-command` without `--permission` — there is no
+  "is this user allowed in general?" mode by design. Every check is
+  a specific permission check.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Action |
@@ -159,6 +259,8 @@ kakaocli policy manage <chatId> --remove --yes
 | `UI automation failed: KakaoTalk launched but did not become ready within timeout` | (a) Mac asleep or display locked; (b) LaunchAgent in wrong session (needs `LimitLoadToSessionType=Aqua` in plist); (c) KakaoTalk not in GUI session | Wake the Mac / re-bootstrap the LaunchAgent. See README "Serve" → "Running as a LaunchAgent". |
 | `alias "X" is already used by another entry` | Two policy entries would share an alias — reverse mapping ambiguous | Choose a different label, or `policy manage <id> --set-alias ""` on the existing entry first |
 | HTTP `/reply` returns `{success:false}` with a clear message | Client error (invalid room, unknown chatId, policy denied) | Read `message`. Errors before AX are HTTP 200; genuine server faults are HTTP 5xx. |
+| `kakaocli policy verify-command` exits with a `DecodingError` | `policy.json` is malformed (missing comma, trailing comma, unquoted value) — usually after a manual edit | `jq . ~/.kakaocli/policy.json` shows the line/column of the syntax error. Fix and re-run. |
+| Hermes receives its own replies as fresh inbound messages → reply loop | `kakaocli sync` running without `--exclude-self` | Re-bootstrap the sync LaunchAgent with `--exclude-self` (the shipped template already has it). |
 
 ## Setup (first-time)
 

@@ -180,7 +180,12 @@ kakaocli send <chatId> "message" --unsafe-no-verify    # explicit bypass on chat
 kakaocli sync --follow                              # NDJSON stream of new messages
 kakaocli sync --follow --interval 1                  # Poll every 1 second
 kakaocli sync --follow --webhook http://localhost:8080/kakao  # POST to webhook
+kakaocli sync --follow --exclude-self                # Drop messages this bot account sent
 ```
+
+`--exclude-self` filters out messages where `is_from_me == true` before they reach stdout / the webhook. Required for the **inbound command** flow (Option C) so a dispatcher's own replies don't loop back as fresh commands. See [Configuration → Inbound commands](#configuration--설정) and the LaunchAgent template at `deploy/launchd/com.kakaocli.sync.plist.template`.
+
+`--exclude-self`는 봇 계정이 직접 보낸 메시지를 stdout/webhook 도달 전에 제거합니다. **Option C 인바운드 명령 흐름**에 필수 — 디스패처가 자기 응답을 다시 명령으로 받아 무한 루프 도는 것 차단.
 
 See [AGENTS.md](AGENTS.md) for AI agent integration instructions.
 
@@ -373,6 +378,42 @@ kakaocli policy manage 468542230323777 --remove --yes       # skips the confirma
 Editing `policy.json` by hand still works — a malformed file is logged to stderr and treated as "no policy" so a bad edit doesn't lock the operator out.
 
 설정 파일은 두 개로 도메인 분리되어 있습니다 — `config.json`은 식별자/경로, `policy.json`은 송신 권한. chatId 경로 송신은 allowlist를 통과해야 하고, 이름·userId 불일치 시 거부됩니다 (사칭 / 채팅 리스트 재정렬 방어). 잘못 편집된 `policy.json`은 "no policy"로 처리되니 락아웃되지 않습니다.
+
+#### Inbound commands (Option C, opt-in)
+
+By default kakaocli treats every inbound KakaoTalk message as conversation. Operators who want KakaoTalk to be a **command channel** (not just an output channel) opt in by adding three fields to `policy.json`:
+
+```json
+{
+  "commandPrefix": "!명령",
+  "commandAcl": [
+    { "userId": 68062272, "role": "system",  "purpose": "owner" },
+    { "userId": 11111111, "role": "general", "purpose": "family" }
+  ],
+  "rolePermissions": {
+    "system":  ["*"],
+    "general": ["search", "messages.read"]
+  }
+}
+```
+
+- `commandPrefix` — message must trim-start with this string to be a command attempt. Pre-LLM gate.
+- `commandAcl` — operator-curated `userId → role` mapping. Senders not on the list are denied regardless of message content.
+- `rolePermissions` — `role → [permission strings]`. `"*"` grants every permission. Permission names are operator-defined; kakaocli treats them opaquely.
+
+Verification CLI for dispatchers (Hermes, custom scripts):
+
+```bash
+kakaocli policy verify-command \
+  --sender-id <senderUserId> \
+  --message "<raw text>" \
+  --permission "<derived permission>"
+# Exit code: 0 allow, 1 deny (logs reason), 2 not a command (silent ignore)
+```
+
+The end-to-end flow is documented in [skills/kakaocli/SKILL.md](skills/kakaocli/SKILL.md#inbound-command-processing-option-c) — the dispatcher subscribes to `kakaocli sync --follow --exclude-self`, extracts intent via the LLM, calls `verify-command`, and branches on the exit code. The LaunchAgent template at `deploy/launchd/com.kakaocli.sync.plist.template` runs that subscription in the Aqua session.
+
+기본값은 인바운드 카톡 메시지를 대화로만 처리합니다. Option C는 명시적 opt-in — 위 세 필드를 `policy.json`에 추가하면 prefix로 시작하는 메시지만 명령으로 해석되고, ACL/role로 권한이 제한됩니다. 디스패처 (Hermes 등)는 `kakaocli policy verify-command`를 호출해 exit code (0/1/2)로 분기합니다.
 
 ## AI Integration / AI 연동
 
