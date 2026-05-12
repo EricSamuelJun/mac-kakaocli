@@ -231,7 +231,9 @@ struct InitCommand: ParsableCommand {
             primaryChatId: primary?.chatId
         )
         try policy.save()
-        let summary = "(strictMode: false, \(policy.allowlist.count) entries)"
+        let count = policy.allowlist.count
+        let noun = count == 1 ? "entry" : "entries"
+        let summary = "(strictMode: false, \(count) \(noun))"
         print("Wrote \(Policy.path) \(summary)")
     }
 

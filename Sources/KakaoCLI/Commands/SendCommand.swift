@@ -38,7 +38,7 @@ struct SendCommand: ParsableCommand {
     @Option(name: .long, help: "Send by chat name (substring match) — legacy, not verifier-protected.")
     var name: String?
 
-    @Flag(name: .customLong("me"), help: "Send to self-chat (나와의 채팅).")
+    @Flag(name: .customLong("me"), help: "Send to self-chat (나와의 채팅). Requires a self-chat to exist in the KakaoTalk chat list — KakaoTalk doesn't create one automatically and accounts that have never used self-chat won't have one.")
     var selfChat = false
 
     @Flag(name: .customLong("main"), help: "Send to the primary chat from policy.primaryChatId.")
