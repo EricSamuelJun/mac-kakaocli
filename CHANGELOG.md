@@ -1,5 +1,14 @@
 # Changelog
 
+### v0.8.0 - `kakaocli policy` subcommand group + aliases
+- New `kakaocli policy` subcommand group: `list`, `add`, `manage`.
+- `PolicyEntry.alias`: optional human-friendly label (e.g. "49기방") that orchestrators resolve to a chatId. Optional + backward-compatible — pre-existing `policy.json` files continue to decode unchanged.
+- Alias uniqueness is enforced at every write path (`policy add`, `policy manage --set-alias`). Reverse mapping (alias → chatId) stays total for Hermes / LLM agents.
+- `policy list` / `policy list --json` — read-only inspection. JSON shape: `{policy_path, strict_mode, deny_by_default, primary_chat_id, entries:[{chat_id, alias, expected_name, expected_user_id, purpose, is_primary}]}`. Snake_case keys match the existing CLI / HTTP output.
+- `policy add` — interactive picker over chats not yet on the allowlist by default; non-interactive when `--chat-id` is given (with `--alias`, `--purpose`, `--no-pin-user-id` flags). Pin auto-resolves to the friend's `directChatMemberUserId` on 1:1 chats.
+- `policy manage <chatId>` — interactive numbered menu by default; flag-driven when any of `--set-alias`, `--set-purpose`, `--set-name`, `--pin-user-id`, `--unpin-user-id`, `--make-primary`, `--remove` is set. `--make-primary` and `--remove` ask for `[y/N]` confirmation unless `--yes` is passed. Removing the current primary auto-clears `policy.primaryChatId`.
+- README "Configuration" section now documents the alias field plus the full `kakaocli policy` workflow. AGENTS.md adds an orchestrator example for alias → chatId → send.
+
 ### v0.7.0 - HTTP read endpoints (Phase 3 gate)
 - `GET /chats?limit=N` returns the chat list in the same snake_case schema as `kakaocli chats --json`. Default limit `50`; non-integer or non-positive `limit` returns HTTP 400.
 - `GET /chat/{chatId}` returns a single chat. Adds `direct_member_user_id` for 1:1 chats (omitted via `encodeIfPresent` for groups / channels). `404 {success:false, message:"Chat not found"}` for unknown chatIds; `400` for non-numeric path segments.

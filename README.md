@@ -306,7 +306,15 @@ Resolution order for `userId`: `KAKAOCLI_USER_ID` env var → `config.json` → 
       "chatId": 313526436723168,
       "expectedName": "전성욱",
       "expectedUserId": 68062272,
-      "purpose": "primary_account_1on1"
+      "purpose": "primary_account_1on1",
+      "alias": null
+    },
+    {
+      "chatId": 468542230323777,
+      "expectedName": "테스트",
+      "expectedUserId": null,
+      "purpose": "test_group",
+      "alias": "49기방"
     }
   ],
   "strictMode": false,
@@ -314,6 +322,8 @@ Resolution order for `userId`: `KAKAOCLI_USER_ID` env var → `config.json` → 
   "primaryChatId": 313526436723168
 }
 ```
+
+`alias` is an optional human-friendly label that orchestrators (Hermes, LLMs) resolve to a chatId via `kakaocli policy list --json`. Aliases must be unique across the allowlist; the `policy add` / `policy manage` commands reject duplicates.
 
 Sends through chatId paths (`send <chatId>`, `send --main`, HTTP `POST /reply`) are verified against this allowlist:
 
@@ -327,7 +337,34 @@ Sends through chatId paths (`send <chatId>`, `send --main`, HTTP `POST /reply`) 
 - `expectedUserId` pins the other side of a 1:1 chat against `NTChatRoom.directChatMemberUserId`. `null` skips this check (groups, self-chat, open channels).
 - CLI `send --name` and `send --me` skip verification by design. HTTP `/reply` has no bypass — misconfiguration is a `policy.json` edit, not a per-request override.
 
-To add entries: edit `policy.json` directly, or re-run `kakaocli init --force`. A malformed policy.json is logged to stderr and treated as "no policy" so a bad edit doesn't lock the operator out.
+#### Managing entries via `kakaocli policy`
+
+`kakaocli init --force` re-scaffolds the file from scratch; for incremental edits the `policy` subcommand group is the recommended path. Both interactive and non-interactive flows exist so the same commands work for operators at a terminal and for Hermes / LLM agents driving the skill manifest.
+
+```bash
+# Inspect current state (★ marks the primary chat)
+kakaocli policy list
+kakaocli policy list --json           # for orchestrators — includes is_primary per entry
+
+# Add a chat — no flags = interactive picker over recent un-allowlisted chats
+kakaocli policy add
+
+# Non-interactive add (Hermes / scripts)
+kakaocli policy add --chat-id 468542230323777 \
+                    --alias "49기방" \
+                    --purpose "test_group_cron"
+
+# Edit / remove a single entry — interactive menu by default
+kakaocli policy manage 468542230323777
+
+# Or flag-driven (any combination)
+kakaocli policy manage 468542230323777 --set-alias "49기방"
+kakaocli policy manage 468542230323777 --pin-user-id
+kakaocli policy manage 468542230323777 --make-primary       # prompts to replace current primary
+kakaocli policy manage 468542230323777 --remove --yes       # skips the confirmation
+```
+
+Editing `policy.json` by hand still works — a malformed file is logged to stderr and treated as "no policy" so a bad edit doesn't lock the operator out.
 
 설정 파일은 두 개로 도메인 분리되어 있습니다 — `config.json`은 식별자/경로, `policy.json`은 송신 권한. chatId 경로 송신은 allowlist를 통과해야 하고, 이름·userId 불일치 시 거부됩니다 (사칭 / 채팅 리스트 재정렬 방어). 잘못 편집된 `policy.json`은 "no policy"로 처리되니 락아웃되지 않습니다.
 

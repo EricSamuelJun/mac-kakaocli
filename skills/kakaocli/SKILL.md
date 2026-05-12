@@ -1,7 +1,7 @@
 ---
 name: kakaocli
 description: Send and receive KakaoTalk messages via CLI or an Iris-compatible HTTP server
-version: 0.7.0
+version: 0.8.0
 requires:
   binaries:
     - kakaocli
@@ -89,6 +89,22 @@ For unattended use, install the LaunchAgent template at `deploy/launchd/com.kaka
 ```bash
 kakaocli schema --format markdown -o docs/SCHEMA.md
 ```
+
+### Manage the Send-Policy Allowlist
+```bash
+# Resolve a human alias (e.g. "49기방") to its chatId
+kakaocli policy list --json | jq '.entries[] | select(.alias=="49기방") | .chat_id'
+
+# Add a chat to the allowlist (non-interactive)
+kakaocli policy add --chat-id <chatId> --alias "<label>" --purpose "<note>"
+
+# Modify an entry
+kakaocli policy manage <chatId> --set-alias "<label>"
+kakaocli policy manage <chatId> --pin-user-id
+kakaocli policy manage <chatId> --make-primary --yes
+kakaocli policy manage <chatId> --remove --yes
+```
+Aliases must be unique across the allowlist; collisions return a non-zero exit. `--yes` skips the [y/N] confirmation that `--make-primary` and `--remove` ask for interactively.
 
 ### Watch for New Messages
 ```bash

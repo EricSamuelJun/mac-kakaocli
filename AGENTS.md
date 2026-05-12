@@ -174,6 +174,44 @@ The chatId path (and HTTP `/reply`) is verified against `~/.kakaocli/policy.json
 
 Agents should rely on policy denials surfacing as `SendError.policyDenied` — distinct from `automationFailed`, so a Spring Boot orchestrator can react differently to "the chat moved" vs "AX broke".
 
+### Managing the Allowlist (`kakaocli policy`)
+
+Three subcommands, all with both interactive (operator) and flag-driven (skill / agent) paths:
+
+```bash
+# Read — JSON shape an orchestrator can parse
+kakaocli policy list --json
+```
+Returns `{policy_path, strict_mode, deny_by_default, primary_chat_id, entries:[…]}`. Each entry has `chat_id`, `alias`, `expected_name`, `expected_user_id`, `purpose`, `is_primary`. The `alias` field is the resolution key — Hermes turns "49기방" into `468542230323777` by walking `entries` and matching on it.
+
+```bash
+# Write — non-interactive (skill manifest entry points)
+kakaocli policy add --chat-id 468542230323777 --alias "49기방" --purpose "test_group"
+kakaocli policy manage 468542230323777 --set-alias "팀방"
+kakaocli policy manage 468542230323777 --pin-user-id
+kakaocli policy manage 468542230323777 --make-primary --yes      # --yes skips the confirmation
+kakaocli policy manage 468542230323777 --remove --yes
+```
+
+Alias uniqueness is enforced: `policy add` / `policy manage --set-alias` throw a non-zero exit (`ValidationError`) if another entry already owns that alias, so the agent's reverse mapping stays total. `--make-primary` and `--remove` ask for `[y/N]` confirmation when run interactively; pass `--yes` for unattended use.
+
+Typical orchestrator flow:
+
+```python
+import json, subprocess
+
+# Resolve a human label to a chatId
+policy = json.loads(subprocess.run(
+    ["kakaocli", "policy", "list", "--json"],
+    capture_output=True, text=True, check=True,
+).stdout)
+alias_to_chat = {e["alias"]: e["chat_id"] for e in policy["entries"] if e["alias"]}
+chat_id = alias_to_chat["49기방"]   # → 468542230323777
+
+# Send (CLI path; or POST to /reply with the same chatId)
+subprocess.run(["kakaocli", "send", str(chat_id), "오늘 뉴스 정리 ..."], check=True)
+```
+
 ## HTTP Server (Iris-Compatible)
 
 For agents and orchestrators that prefer HTTP over a CLI subprocess, `kakaocli serve` exposes a minimal endpoint that accepts the same JSON shape as the [Iris bot's](https://github.com/dolidolih/Iris) `POST /reply`. This means a Spring Boot / Hermes orchestrator can target `kakaocli serve` today and swap to `irisbot` (Android) later by changing only the URL — both backends accept identical payloads.
